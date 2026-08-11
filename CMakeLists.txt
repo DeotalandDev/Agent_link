@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.16)
+if(CMAKE_SCRIPT_MODE_FILE)
+    return()
+endif()
+include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+project(agent_link)

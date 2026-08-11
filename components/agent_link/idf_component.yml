@@ -1,0 +1,10 @@
+version: "0.1.0"
+description: >-
+  Agent Link: connect embedded devices to the Deotaland Agent platform.
+  Capability-based I/O protocol over a pluggable transport (BLE now, WiFi/USB later).
+  Devices declare capabilities + register a few callbacks; the component handles
+  all App/Agent plumbing so new hardware integrates in a handful of lines.
+license: "MIT"
+dependencies:
+  idf:
+    version: ">=5.0"

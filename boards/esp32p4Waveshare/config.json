@@ -1,0 +1,14 @@
+{
+    "manufacturer": "waveshare",
+    "type": "esp32p4Waveshare",
+    "target": "esp32p4",
+    "builds": [
+        {
+            "name": "esp32p4Waveshare",
+            "sdkconfig_append": [
+                "CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y",
+                "CONFIG_SPIRAM=y"
+            ]
+        }
+    ]
+}

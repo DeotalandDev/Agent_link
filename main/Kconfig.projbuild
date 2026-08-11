@@ -1,0 +1,18 @@
+menu "Agent Link Device"
+
+choice BOARD_TYPE
+    prompt "Board Type"
+    default BOARD_TYPE_ROROLEE_S3
+    help
+        This option only decides "which board to compile",NOT the target chip,Different boards may use different chips
+        Adding a new board:  see boards/README.md
+    config BOARD_TYPE_ROROLEE_S3
+        bool "RoRoLee-S3 (ESP32-S3)"
+
+    config BOARD_TYPE_ESP32P4_WAVESHARE
+        bool "ESP32-P4 Waveshare (CO5300 466x466 AMOLED)"
+    config BOARD_TYPE_ESP32S3_TEM_MONITOR
+        bool "ESP32-S3 TemMonitor (Pressure_Temp_Humidity_Monitor)"
+endchoice
+
+endmenu
