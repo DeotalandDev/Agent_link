@@ -1,0 +1,57 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AgentLink WiFi</title>
+<style>
+:root{--bg:#0b0f17;--card:#151b26;--fg:#e8edf4;--mut:#8a94a6;--acc:#4f8cff;--line:#232c3b}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+.card{width:100%;max-width:420px;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:24px;box-shadow:0 12px 40px rgba(0,0,0,.35)}
+h1{margin:0 0 2px;font-size:22px}
+.sub{margin:0 0 20px;color:var(--mut);font-size:13px}
+label.field{display:block;margin:16px 0 6px;font-size:13px;color:var(--mut)}
+input,select{width:100%;padding:12px 14px;background:#0e1420;border:1px solid var(--line);border-radius:10px;color:var(--fg);font-size:15px;outline:none}
+input:focus,select:focus{border-color:var(--acc)}
+select{margin-bottom:8px}
+button{margin-top:22px;width:100%;padding:13px;border:0;border-radius:10px;background:var(--acc);color:#fff;font-size:16px;font-weight:600;cursor:pointer}
+button:active{opacity:.85}
+.chk{display:flex;align-items:center;gap:8px;margin-top:10px;color:var(--mut);font-size:13px}
+.chk input{width:auto;margin:0}
+.tip{margin-top:14px;font-size:12px;color:var(--mut)}
+.foot{margin:20px 0 0;text-align:center;color:var(--mut);font-size:12px}
+.langbar{display:flex;justify-content:flex-end;margin-bottom:6px}
+.langbtn{font-size:12px;color:var(--acc);border:1px solid var(--line);border-radius:999px;padding:3px 12px;cursor:pointer;user-select:none}
+/* ---- Language toggle: pure CSS, no JS. #lang unchecked = 中文, checked = English. ---- */
+#lang{position:absolute;left:-9999px}
+.en{display:none}                        /* default (中文): hide English */
+#lang:checked~.card .en{display:inline}  /* checked (English): show English, */
+#lang:checked~.card .zh{display:none}    /*                    hide Chinese  */
+</style>
+</head>
+<body>
+<input type="checkbox" id="lang">
+<div class="card">
+<div class="langbar"><label for="lang" class="langbtn"><span class="zh">English</span><span class="en">中文</span></label></div>
+<h1><span class="zh">WiFi 配网</span><span class="en">WiFi Setup</span></h1>
+<p class="sub"><span class="zh">为设备选择要接入的 WiFi</span><span class="en">Connect this device to your WiFi</span></p>
+<form method="POST" action="/provision" autocomplete="off">
+<label class="field"><span class="zh">WiFi 名称</span><span class="en">Network name (SSID)</span></label>
+<select id="sel" onchange="var e=document.getElementById('ssid');if(e)e.value=this.value">
+<option value="">— SSID —</option>
+{{SSIDS}}
+</select>
+<input type="text" name="ssid" id="ssid" maxlength="32" required>
+<p class="tip"><span class="zh">从上方列表选择，或在此手动输入。</span><span class="en">Pick from the list above, or type it in.</span></p>
+<label class="field"><span class="zh">密码</span><span class="en">Password</span></label>
+<input type="password" name="password" id="pw" maxlength="64">
+<label class="chk"><input type="checkbox" onchange="pw.type=this.checked?'text':'password'"><span class="zh">显示密码</span><span class="en">Show password</span></label>
+<p class="tip"><span class="zh">开放网络可留空密码；仅支持 2.4GHz WiFi。</span><span class="en">Leave blank for open networks; 2.4GHz WiFi only.</span></p>
+<button type="submit"><span class="zh">连接</span><span class="en">Connect</span></button>
+</form>
+<p class="tip"><span class="zh">列表里没有？稍等几秒后刷新页面。</span><span class="en">Not listed? Wait a few seconds, then reload.</span></p>
+<p class="foot">Deotaland Agent Platform</p>
+</div>
+</body>
+</html>

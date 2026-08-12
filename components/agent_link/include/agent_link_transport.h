@@ -189,6 +189,13 @@ struct agent_wifi_config_s;
 void agent_transport_wifi_set_config(const struct agent_wifi_config_s* cfg);
 
 /**
+ * @brief Set the device name used as the SoftAP SSID prefix for WiFi provisioning.
+ * @param name Device name; the captive-portal SoftAP is advertised as "<name>-XXXX".
+ * @note Called by agent_link_init() with the device name from config.
+ */
+void agent_transport_wifi_set_name(const char* name);
+
+/**
  * @brief Register callback for incoming control frames.
  * @param cb Function called when a control message is received (WS/DataChannel).
  * @note Called by agent_link_init() to wire the core's OnCtrlFrame.

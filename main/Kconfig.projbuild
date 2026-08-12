@@ -15,4 +15,17 @@ choice BOARD_TYPE
         bool "ESP32-S3 TemMonitor (Pressure_Temp_Humidity_Monitor)"
 endchoice
 
+choice AGENT_LINK_TRANSPORT
+    prompt "Transport backend"
+    default AGENT_LINK_TRANSPORT_BLE
+    help
+        How the device reaches the Deotaland Agent platform
+        BLE:  connect to the phone App over Bluetooth (the App relays to the cloud)
+        WiFi: join a WiFi network: first run brings up a SoftAP captive portal to enter the WiFi credentials
+    config AGENT_LINK_TRANSPORT_BLE
+        bool "BLE"
+    config AGENT_LINK_TRANSPORT_WIFI
+        bool "WiFi"
+endchoice
+
 endmenu

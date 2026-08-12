@@ -36,6 +36,9 @@ extern "C" void app_main(void) {
     cfg.caps        = board.Capabilities();
     cfg.output      = &out;
     cfg.on_state    = on_state;
+#if CONFIG_AGENT_LINK_TRANSPORT_WIFI
+    cfg.transport   = AGENT_TRANSPORT_WIFI;  // WiFi station + captive-portal provisioning
+#endif
 
     ESP_ERROR_CHECK(agent_link_init(&cfg));     //agent_link initialization
     ESP_ERROR_CHECK(agent_link_start());

@@ -334,6 +334,7 @@ esp_err_t agent_link_init(const agent_link_config_t* cfg) {
     case AGENT_TRANSPORT_WIFI:
         s_tx = agent_transport_wifi();
         agent_transport_wifi_set_config(s_cfg.wifi);
+        agent_transport_wifi_set_name(s_cfg.device_name);  // SoftAP SSID prefix for captive-portal provisioning
         agent_transport_wifi_set_recv(&OnCtrlFrame);
         agent_transport_wifi_set_conn(&OnConn);
         agent_transport_wifi_set_stream_recv(&OnStreamData);

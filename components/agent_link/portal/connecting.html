@@ -1,0 +1,50 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AgentLink WiFi</title>
+<style>
+:root{--bg:#0b0f17;--card:#151b26;--fg:#e8edf4;--mut:#8a94a6;--acc:#4f8cff;--line:#232c3b}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+.card{width:100%;max-width:420px;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:24px;box-shadow:0 12px 40px rgba(0,0,0,.35);text-align:center}
+h1{margin:8px 0 8px;font-size:22px}
+.sub{margin:0;color:var(--mut);font-size:14px}
+.spin{width:38px;height:38px;margin:22px auto 4px;border:3px solid var(--line);border-top-color:var(--acc);border-radius:50%;animation:s 1s linear infinite}
+@keyframes s{to{transform:rotate(360deg)}}
+.foot{margin:22px 0 0;color:var(--mut);font-size:12px}
+a{color:var(--acc)}
+.langbar{display:flex;justify-content:flex-end;margin-bottom:2px}
+.langbtn{font-size:12px;color:var(--acc);border:1px solid var(--line);border-radius:999px;padding:3px 12px;cursor:pointer;user-select:none}
+/* ---- Language toggle: pure CSS, no JS. #lang unchecked = 中文, checked = English. ---- */
+#lang{position:absolute;left:-9999px}
+.en{display:none}
+#lang:checked~.card .en{display:inline}
+#lang:checked~.card .zh{display:none}
+</style>
+</head>
+<body>
+<input type="checkbox" id="lang">
+<div class="card">
+<div class="langbar"><label for="lang" class="langbtn"><span class="zh">English</span><span class="en">中文</span></label></div>
+<h1 id="t"><span class="zh">正在连接…</span><span class="en">Connecting…</span></h1>
+<p class="sub" id="m"><span class="zh">设备正在接入 WiFi，请保持本页打开。</span><span class="en">The device is joining WiFi. Keep this page open.</span></p>
+<div class="spin" id="sp"></div>
+<p class="foot">Deotaland Agent Platform</p>
+</div>
+<script>
+// Live progress (best-effort — the captive-portal browser may block fetch; the device connects regardless).
+function zh(){return !document.getElementById('lang').checked}
+var R={badpass:['密码错误或认证失败','Wrong password / auth failed'],notfound:['未找到该 WiFi','Network not found'],fail:['连接失败，请重试','Connection failed, please retry']};
+function hide(){var e=document.getElementById('sp');if(e)e.style.display='none'}
+function done(s){document.getElementById('t').textContent=zh()?'✅ 连接成功':'✅ Connected';document.getElementById('m').textContent=zh()?('设备已接入 “'+(s.ssid||'')+'”，IP '+(s.ip||'')+'，可关闭本页。'):('Joined "'+(s.ssid||'')+'", IP '+(s.ip||'')+'. You can close this page.');hide()}
+function fail(s){document.getElementById('t').textContent=zh()?'❌ 连接失败':'❌ Failed';var r=R[s.reason]||R.fail;document.getElementById('m').textContent=zh()?r[0]:r[1];hide()}
+function poll(){fetch('/status').then(function(r){return r.json()}).then(function(s){
+if(s.state==='connected')return done(s);
+if(s.state==='failed')return fail(s);
+setTimeout(poll,1200)}).catch(function(){setTimeout(poll,1500)})}
+poll();
+</script>
+</body>
+</html>
