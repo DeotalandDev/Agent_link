@@ -13,6 +13,8 @@ choice BOARD_TYPE
         bool "ESP32-P4 Waveshare (CO5300 466x466 AMOLED)"
     config BOARD_TYPE_ESP32S3_TEM_MONITOR
         bool "ESP32-S3 TemMonitor (Pressure_Temp_Humidity_Monitor)"
+    config BOARD_TYPE_ESP32S3_ES8311_VOICE
+        bool "ESP32-S3 ES8311 Voice (single-codec audio example)"
 endchoice
 
 choice AGENT_LINK_TRANSPORT

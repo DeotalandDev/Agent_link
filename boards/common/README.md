@@ -4,12 +4,13 @@ Drivers and helpers that more than one board may use (chip drivers, bus helpers)
 pins; the driver itself is board-independent. `main/CMakeLists.txt` compiles every `*.cc`/`*.c` here, and
 the include path `../boards/common` lets a board `#include "xxx.h"` directly.
 
-| Files | Purpose | Dependencies (in main's REQUIRES) |
-|---|---|---|
-| `sh8501_panel.{h,cc}` | SH8501 AMOLED (SPI): init + solid fill + brightness; pins come from `Sh8501Config` | `esp_lcd`, `esp_lcd_sh8501`, `esp_driver_spi`, `esp_driver_gpio` |
-| `es_codec.{h,cc}` | ES8311 + ES7210 full-duplex audio codec (speaker out / mic in) | `esp_codec_dev`, `esp_driver_i2c`, `esp_driver_i2s` |
-| `co5300_panel.{h,cc}` + `co5300_hal.{c,h}` | CO5300 466x466 AMOLED (MIPI-DSI); ESP32-P4 only (stubbed out on other targets) | `esp_lcd`, `esp_lcd_co5300` |
-| `bq27220.{h,cc}` | BQ27220 fuel gauge (I2C); reuses an I2C bus another driver already created | `esp_driver_i2c` |
+| Files                                      | Purpose                                                                                     | Dependencies (in main's REQUIRES)                                |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `sh8501_panel.{h,cc}`                      | SH8501 AMOLED (SPI): init + solid fill + brightness; pins come from `Sh8501Config`          | `esp_lcd`, `esp_lcd_sh8501`, `esp_driver_spi`, `esp_driver_gpio` |
+| `es_codec.{h,cc}`                          | ES8311 + ES7210 full-duplex audio codec (speaker out / mic in)                              | `esp_codec_dev`, `esp_driver_i2c`, `esp_driver_i2s`              |
+| `es8311_audio.{h,cc}`                      | ES8311-only full-duplex codec: one chip does both speaker (DAC) and mic (ADC), standard I2S | `esp_codec_dev`, `esp_driver_i2c`, `esp_driver_i2s`              |
+| `co5300_panel.{h,cc}` + `co5300_hal.{c,h}` | CO5300 466x466 AMOLED (MIPI-DSI); ESP32-P4 only (stubbed out on other targets)              | `esp_lcd`, `esp_lcd_co5300`                                      |
+| `bq27220.{h,cc}`                           | BQ27220 fuel gauge (I2C); reuses an I2C bus another driver already created                  | `esp_driver_i2c`                                                 |
 
 ## Usage (from a board)
 

@@ -1,0 +1,13 @@
+{
+    "manufacturer": "deotaland",
+    "type": "es8311-voice",
+    "target": "esp32s3",
+    "builds": [
+        {
+            "name": "es8311-voice",
+            "sdkconfig_append": [
+                "CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y"
+            ]
+        }
+    ]
+}
