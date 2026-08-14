@@ -210,10 +210,39 @@ esp_err_t agent_link_push_voice(const uint8_t* pcm16, size_t bytes);
 esp_err_t agent_link_voice_end(void);
 
 /**
- * @brief Push a general input event
- * @param type Event type (from agent_event_t)
- * @param data Event data (can be NULL)
- * @param len  Data length
+ * @brief Start a real-time ASR audio stream (device → App).
+ *
+ * Opens the record-stream channel. The App transcribes the streamed audio live (ASR). 
+ * agent_link is a transparent pipe: it transports exactly the bytes you push and 
+ * owns only the transfer_id, the 0x52/0x53 framing, and L2CAP chunking + backpressure.
+ * feed whatever audio format the App's ASR expects
+ * 
+ * @param name Stream label carried in the 0x52 event (UTF-8, no NUL). May be NULL.
+ * @return ESP_OK once the stream is open; ESP_ERR_INVALID_STATE if the link / L2CAP channel is not ready.
+ * @note Requires the App to have opened the L2CAP CoC (PSM 0x0081) after connecting. BLE transport only,
+ *       one stream at a time. Push audio with agent_link_asr_push(), then close with agent_link_asr_end().
+ */
+esp_err_t agent_link_asr_start(const char* name);
+
+/** @brief Push a chunk of ASR audio, streamed to the App over L2CAP (call agent_link_asr_start() first). */
+esp_err_t agent_link_asr_push(const uint8_t* audio, size_t bytes);
+
+/**
+ * @brief End the ASR audio stream (BLE: event 0x53 StreamEnd with status + valid_bytes).
+ * @param complete true = clean end (status=0); false = aborted/truncated (status=1).
+ */
+esp_err_t agent_link_asr_end(bool complete);
+
+/**
+ * @brief Push a device→Agent event
+ *
+ * The event_id on the wire is the agent_event_t value. Use AGENT_EVT_CUSTOM (0x64) for a board-private packet
+ * the board defines its own payload and the App matches on event_id 0x64
+ * a dropped frame is not resent, so don't rely on it for state that must never desync
+ * carry the explicit state in the payload rather than a bare toggle.
+ * @param type Event type (from agent_event_t; AGENT_EVT_CUSTOM for board-private packets)
+ * @param data Event payload (can be NULL if len == 0)
+ * @param len  Payload length
  */
 esp_err_t agent_link_push_event(agent_event_t type, const uint8_t* data, size_t len);
 

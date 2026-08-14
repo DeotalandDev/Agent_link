@@ -38,6 +38,7 @@ bool                s_have_out = false;
 agent_state_t       s_state = AGENT_STATE_DISCONNECTED;
 agent_transport_t*  s_tx    = nullptr;
 bool                s_voice_started = false;  // whether a voice session is currently open
+bool                s_asr_started   = false;  // whether an ASR / record-stream session is currently open
 
 // The SDK only notifies when the battery level changes / charging state changes / a
 // low-battery edge occurs. The cache is updated only on a successful send; a failed
@@ -226,6 +227,7 @@ void OnConn(bool connected) {
     s_manifest_sent = false;      // reset on connect and disconnect: re-send after 0xFFC4 subscribe (BLE) / after connect (WiFi)
     if (!connected) {
         s_voice_started = false;  // on disconnect: the next push_voice reopens the session
+        s_asr_started   = false;  // and the next asr_start reopens the ASR stream
     } else {
         // Clear the battery cache on connect so the next report_battery force-resends the current value (initial sync for the App).
         s_bat_pct = -1; s_bat_chg = -1; s_bat_low_armed = true;
@@ -421,8 +423,13 @@ esp_err_t agent_link_report_selected_agent(const char* agent_id) {
     return not_ready("report_selected_agent");  // TODO: 0x16 event (needs index + name_len + name format)
 }
 esp_err_t agent_link_push_event(agent_event_t type, const uint8_t* data, size_t len) {
-    (void)type; (void)data; (void)len;
-    return not_ready("push_event");  // TODO: map generic input events (button/sensor/wake-word) to event frames
+    if (!s_tx || !s_tx->send_ctrl) return ESP_ERR_INVALID_STATE;
+    if (!(s_tx->is_ready && s_tx->is_ready(s_tx->impl))) return not_ready("push_event");
+    // The event_id on the wire is the agent_event_t value: AGENT_EVT_BUTTON/SENSOR/WAKEWORD, or
+    // AGENT_EVT_CUSTOM (0x64) for device-private packets — the board owns the payload and the App
+    // matches on event_id 0x64 (best-effort, like other events; a dropped frame is not resent).
+    auto ev = agentlink::BuildEvent(static_cast<uint8_t>(type), data, len);
+    return s_tx->send_ctrl(s_tx->impl, ev.data(), ev.size());
 }
 
 // ── Generic I/O: sensors / actuators (see docs/device-io.md; generic channel that does not grow per sensor kind) ──
@@ -498,7 +505,34 @@ esp_err_t agent_link_push_voice(const uint8_t* pcm16, size_t bytes) {
 esp_err_t agent_link_voice_end(void) {
     if (!s_voice_started) return ESP_OK;
     s_voice_started = false;
-    if (s_tx && s_tx->stream_end) return s_tx->stream_end(s_tx->impl, AGENT_STREAM_VOICE, /*complete=*/true);
+    if (s_tx && s_tx->stream_end) return s_tx->stream_end(s_tx->impl, AGENT_STREAM_VOICE, /*complete=*/true, nullptr, 0);
+    return ESP_OK;
+}
+
+// Data plane: real-time ASR audio uplink
+// A device to App stream the App transcribes live. agent_link only transports the caller's bytes over the
+// record-stream channel: transfer_id + 0x52/0x53 framing + L2CAP chunking/backpressure.
+// Requires the App to have opened the L2CAP CoC (PSM 0x0081). One stream at a time; close with asr_end.
+esp_err_t agent_link_asr_start(const char* name) {
+    if (!s_tx || !s_tx->stream_start) return ESP_ERR_INVALID_STATE;
+    if (!(s_tx->is_ready && s_tx->is_ready(s_tx->impl))) return not_ready("asr_start");
+    if (s_asr_started) return ESP_OK;  // idempotent: already streaming
+    esp_err_t r = s_tx->stream_start(s_tx->impl, AGENT_STREAM_RECORDING,
+                                     reinterpret_cast<const uint8_t*>(name), name ? strlen(name) : 0);
+    if (r != ESP_OK) return r;
+    s_asr_started = true;
+    return ESP_OK;
+}
+esp_err_t agent_link_asr_push(const uint8_t* audio, size_t bytes) {
+    if (!audio || bytes == 0) return ESP_ERR_INVALID_ARG;
+    if (!s_asr_started) return ESP_ERR_INVALID_STATE;  // call agent_link_asr_start() first
+    if (!s_tx || !s_tx->send_stream) return ESP_ERR_INVALID_STATE;
+    return s_tx->send_stream(s_tx->impl, AGENT_STREAM_RECORDING, audio, bytes);
+}
+esp_err_t agent_link_asr_end(bool complete) {
+    if (!s_asr_started) return ESP_OK;
+    s_asr_started = false;
+    if (s_tx && s_tx->stream_end) return s_tx->stream_end(s_tx->impl, AGENT_STREAM_RECORDING, complete, nullptr, 0);
     return ESP_OK;
 }
 esp_err_t agent_link_recording_start(const char* name, const uint8_t* wav_header, size_t hdr_len) {

@@ -1,0 +1,13 @@
+{
+    "manufacturer": "deotaland",
+    "type": "es8311-asr",
+    "target": "esp32s3",
+    "builds": [
+        {
+            "name": "es8311-asr",
+            "sdkconfig_append": [
+                "CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y"
+            ]
+        }
+    ]
+}

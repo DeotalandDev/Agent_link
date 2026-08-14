@@ -15,6 +15,8 @@ elseif(CONFIG_BOARD_TYPE_ESP32S3_TEM_MONITOR)
     set(BOARD_DIR "tem_monitor")
 elseif(CONFIG_BOARD_TYPE_ESP32S3_ES8311_VOICE)
     set(BOARD_DIR "es8311-voice")
+elseif(CONFIG_BOARD_TYPE_ESP32S3_ES8311_ASR)
+    set(BOARD_DIR "es8311-asr")
 # Add a new board:Add the line elseif(CONFIG_BOARD_TYPE_XXX) set(BOARD_DIR "your-board")
 endif()
 

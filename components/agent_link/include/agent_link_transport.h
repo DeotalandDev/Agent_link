@@ -92,7 +92,11 @@ typedef struct agent_transport_s {
      * @param complete true if the stream ended normally, false if aborted
      * @return ESP_OK on success, error code otherwise
      */
-    esp_err_t (*stream_end)(void* impl, agent_stream_t type, bool complete);
+    /**
+     * @param meta     Optional trailing metadata (60-byte final_header for the 0x53 event); NULL if none
+     * @param meta_len Length of meta
+     */
+    esp_err_t (*stream_end)(void* impl, agent_stream_t type, bool complete, const uint8_t* meta, size_t meta_len);
 
     /**
      * @brief Check if the transport is ready (connected and encrypted)

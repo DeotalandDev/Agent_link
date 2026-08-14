@@ -350,7 +350,8 @@ esp_err_t wifi_stream_start(void* /*impl*/, agent_stream_t /*type*/, const uint8
 esp_err_t wifi_send_stream(void* /*impl*/, agent_stream_t /*type*/, const uint8_t* /*data*/, size_t /*len*/) {
     return ESP_ERR_NOT_SUPPORTED;
 }
-esp_err_t wifi_stream_end(void* /*impl*/, agent_stream_t /*type*/, bool /*complete*/) {
+esp_err_t wifi_stream_end(void* /*impl*/, agent_stream_t /*type*/, bool /*complete*/,
+                          const uint8_t* /*meta*/, size_t /*meta_len*/) {
     return ESP_ERR_NOT_SUPPORTED;
 }
 
