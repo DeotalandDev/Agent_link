@@ -17,6 +17,8 @@ elseif(CONFIG_BOARD_TYPE_ESP32S3_ES8311_VOICE)
     set(BOARD_DIR "es8311-voice")
 elseif(CONFIG_BOARD_TYPE_ESP32S3_ES8311_ASR)
     set(BOARD_DIR "es8311-asr")
+elseif(CONFIG_BOARD_TYPE_ESP32S3_GC2145_CAMERA)
+    set(BOARD_DIR "gc2145-camera")
 # Add a new board:Add the line elseif(CONFIG_BOARD_TYPE_XXX) set(BOARD_DIR "your-board")
 endif()
 
@@ -34,6 +36,9 @@ endif()
 set(EXTRA_REQUIRES "")
 if(CONFIG_BOARD_TYPE_ESP32P4_WAVESHARE)
     list(APPEND EXTRA_REQUIRES esp_lcd_co5300)
+endif()
+if(CONFIG_BOARD_TYPE_ESP32S3_GC2145_CAMERA)
+    list(APPEND EXTRA_REQUIRES esp32_camera)
 endif()
 
 idf_component_register(

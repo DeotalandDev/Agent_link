@@ -535,17 +535,7 @@ esp_err_t agent_link_asr_end(bool complete) {
     if (s_tx && s_tx->stream_end) return s_tx->stream_end(s_tx->impl, AGENT_STREAM_RECORDING, complete, nullptr, 0);
     return ESP_OK;
 }
-esp_err_t agent_link_recording_start(const char* name, const uint8_t* wav_header, size_t hdr_len) {
-    (void)name; (void)wav_header; (void)hdr_len; return not_ready("recording_start");
-}
-esp_err_t agent_link_recording_data(const uint8_t* chunk, size_t len) {
-    (void)chunk; (void)len; return not_ready("recording_data");
-}
-esp_err_t agent_link_recording_end(bool complete, const uint8_t* final_header, size_t hdr_len) {
-    (void)complete; (void)final_header; (void)hdr_len; return not_ready("recording_end");
-}
-
-// ── Data plane: video (WiFi only; see transport_wifi.cpp) ────────────────────────
+// ── Data plane: video (WiFi only; see transport_wifi.cpp)
 esp_err_t agent_link_push_video(const uint8_t* frame, size_t bytes, uint32_t pts_ms, bool keyframe) {
     (void)frame; (void)bytes; (void)pts_ms; (void)keyframe; return not_ready("push_video");
 }

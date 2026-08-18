@@ -264,25 +264,6 @@ esp_err_t agent_link_report_battery(uint8_t percent, bool charging);
 esp_err_t agent_link_report_selected_agent(const char* agent_id);
 
 /**
- * @brief Start a recording session
- * @param name        Filename
- * @param wav_header  WAV header (with placeholder size fields)
- * @param hdr_len     Header length
- */
-esp_err_t agent_link_recording_start(const char* name, const uint8_t* wav_header, size_t hdr_len);
-
-/** @brief Push a chunk of recording data */
-esp_err_t agent_link_recording_data(const uint8_t* chunk, size_t len);
-
-/**
- * @brief End a recording session
- * @param complete     true if recording completed successfully
- * @param final_header Final WAV header with correct size fields
- * @param hdr_len      Header length
- */
-esp_err_t agent_link_recording_end(bool complete, const uint8_t* final_header, size_t hdr_len);
-
-/**
  * @brief Push an encoded video frame
  * @param frame    Encoded video frame (JPEG/H264, format negotiated)
  * @param bytes    Frame size in bytes

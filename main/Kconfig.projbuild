@@ -17,6 +17,8 @@ choice BOARD_TYPE
         bool "ESP32-S3 ES8311 Voice (single-codec audio example)"
     config BOARD_TYPE_ESP32S3_ES8311_ASR
         bool "ESP32-S3 ES8311 ASR (minimal real-time ASR example)"
+    config BOARD_TYPE_ESP32S3_GC2145_CAMERA
+        bool "ESP32-S3 GC2145 Camera (DVP camera preview on ST7789 LCD)"
 endchoice
 
 choice AGENT_LINK_TRANSPORT
