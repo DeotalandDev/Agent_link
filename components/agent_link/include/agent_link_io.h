@@ -43,7 +43,21 @@ typedef enum {
     AGENT_VAL_VEC3,     ///< 3D vector, float[3] (IMU / gyroscope / accelerometer)
     AGENT_VAL_RGB,      ///< Color 0x00RRGGBB (packed into a u32)
     AGENT_VAL_BLOB,     ///< Raw bytes (custom / composite actuator parameters)
+    AGENT_VAL_STR,      ///< UTF-8 string, variable length (screen text / string readings)
 } agent_val_t;
+
+/** @brief Endpoint visibility to the AI vs the user/companion app. */
+typedef enum {
+    AGENT_AUD_AI   = 0, ///< LLM-callable (default): exposed as a normal MCP tool/resource
+    AGENT_AUD_USER = 1, ///< User/app only: hidden from the LLM (e.g. reboot / factory reset / OTA)
+} agent_audience_t;
+
+/** @brief How an input endpoint reports readings (a hint for the Agent). */
+typedef enum {
+    AGENT_EVT_PERIODIC  = 0, ///< Periodic at rate_hz (default)
+    AGENT_EVT_ON_CHANGE = 1, ///< Only when the value changes
+    AGENT_EVT_THRESHOLD = 2, ///< Only when a threshold / alarm is crossed
+} agent_evt_mode_t;
 
 /**
  * @brief Self-description of one I/O endpoint.
@@ -60,6 +74,12 @@ typedef struct {
     float          range_max;   ///< Range upper bound
     uint16_t       rate_hz;     ///< Suggested reporting rate in Hz (0 = event-driven / irregular)
     const char*    args_schema; ///< Actuator parameter schema (JSON string, OUT endpoints only; may be NULL)
+    // ── Extended self-description (all optional; zero-initialized defaults are sensible) ──
+    const char*      display_name; ///< Human-friendly name for UIs (may be NULL)
+    agent_audience_t audience;     ///< AI-callable (default 0) or user-only (hidden from the LLM)
+    const char*      enum_json;    ///< Allowed discrete values, JSON array string e.g. ["off","low","high"] (may be NULL)
+    const char*      default_json; ///< Default value as a JSON literal string (may be NULL)
+    agent_evt_mode_t event;        ///< Reporting semantics (default 0 = periodic)
 } agent_link_io_desc_t;
 
 /**
@@ -94,6 +114,15 @@ esp_err_t agent_link_register_io(const agent_link_io_desc_t* desc,
  *       before calling (a data-plane path may be added later).
  */
 esp_err_t agent_link_push_reading(const char* id, const void* value, size_t len);
+
+/**
+ * @brief Notify the Agent that the I/O manifest changed (endpoints added/removed at runtime).
+ * @return ESP_OK on success, error code otherwise.
+ * @details Bumps the manifest revision, emits a 0x1A ManifestChanged event carrying the new
+ *          revision, and re-sends the full manifest (0x18). Call after registering additional
+ *          endpoints once the link may already be up. Safe to call when disconnected.
+ */
+esp_err_t agent_link_notify_manifest_changed(void);
 
 #ifdef __cplusplus
 }

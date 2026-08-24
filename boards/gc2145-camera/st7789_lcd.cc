@@ -1,6 +1,7 @@
 #include "st7789_lcd.h"
 
 #include <algorithm>
+#include <cstring>
 
 #include "driver/gpio.h"
 #include "esp_check.h"
@@ -14,7 +15,7 @@
 
 namespace {
 constexpr const char* TAG = "st7789_lcd";
-constexpr uint16_t kStripeRows = 40;  // 240 * 40 * 2B = 19200B FillSolid stripe (internal DMA SRAM)
+constexpr uint16_t kStripeRows = 40;  // 240 * 40 * 2B = 19200B blit stripe
 
 bool ColorTransDone(esp_lcd_panel_io_handle_t /*io*/,
                     esp_lcd_panel_io_event_data_t* /*edata*/,
@@ -70,7 +71,7 @@ esp_err_t St7789Lcd::Init(const St7789LcdConfig& cfg) {
         (void)Backlight(false);
     }
 
-    // SPI bus. max_transfer_sz spans a whole frame so DrawBitmap can blit 240x240 in one queued transfer.
+    // SPI bus
     spi_bus_config_t bus = {};
     bus.sclk_io_num     = cfg_.pin_sck;
     bus.mosi_io_num     = cfg_.pin_mosi;
@@ -104,7 +105,7 @@ esp_err_t St7789Lcd::Init(const St7789LcdConfig& cfg) {
         esp_lcd_panel_io_register_event_callbacks(io_, &cbs, this),
         TAG, "register cb");
 
-    // ── panel (ST7789, built into esp_lcd) ──
+    // panel
     esp_lcd_panel_dev_config_t panel_cfg = {};
     panel_cfg.reset_gpio_num = cfg_.pin_rst;
     panel_cfg.rgb_ele_order  = cfg_.bgr ? LCD_RGB_ELEMENT_ORDER_BGR : LCD_RGB_ELEMENT_ORDER_RGB;
@@ -128,17 +129,21 @@ esp_err_t St7789Lcd::Init(const St7789LcdConfig& cfg) {
     return ESP_OK;
 }
 
+esp_err_t St7789Lcd::EnsureStripe(size_t bytes) {
+    if (stripe_ && stripe_cap_ >= bytes) return ESP_OK;
+    if (stripe_) heap_caps_free(stripe_);
+    stripe_ = static_cast<uint8_t*>(
+        heap_caps_aligned_alloc(4, bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    if (!stripe_) { stripe_cap_ = 0; return ESP_ERR_NO_MEM; }
+    stripe_cap_ = bytes;
+    return ESP_OK;
+}
+
 esp_err_t St7789Lcd::FillSolid(uint16_t color) {
     if (!panel_) return ESP_ERR_INVALID_STATE;
 
     const size_t stripe_bytes = static_cast<size_t>(cfg_.width) * kStripeRows * 2u;
-    if (!stripe_ || stripe_cap_ < stripe_bytes) {
-        if (stripe_) heap_caps_free(stripe_);
-        stripe_ = static_cast<uint8_t*>(
-            heap_caps_aligned_alloc(4, stripe_bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-        if (!stripe_) { stripe_cap_ = 0; return ESP_ERR_NO_MEM; }
-        stripe_cap_ = stripe_bytes;
-    }
+    ESP_RETURN_ON_ERROR(EnsureStripe(stripe_bytes), TAG, "stripe alloc");
 
     const uint8_t hi = static_cast<uint8_t>(color >> 8);   // ST7789 latches the high byte first
     const uint8_t lo = static_cast<uint8_t>(color & 0xFF);
@@ -162,15 +167,26 @@ esp_err_t St7789Lcd::FillSolid(uint16_t color) {
 
 esp_err_t St7789Lcd::DrawBitmap(uint16_t x, uint16_t y, uint16_t w, uint16_t h, const void* pixels) {
     if (!panel_ || !pixels) return ESP_ERR_INVALID_STATE;
-    // esp_lcd end coords are exclusive. Draw the whole frame in one queued transfer, then wait so the
-    // caller can safely return the frame buffer (single source buffer, no double-buffering here).
-    const uint32_t expect = done_count_.load(std::memory_order_acquire) + 1;
-    ESP_RETURN_ON_ERROR(
-        esp_lcd_panel_draw_bitmap(panel_, x, y, static_cast<uint16_t>(x + w), static_cast<uint16_t>(y + h), pixels),
-        TAG, "draw_bitmap");
-    if (!WaitDone(expect, 1000)) {
-        ESP_LOGE(TAG, "DrawBitmap tx timeout (%ux%u)", w, h);
-        return ESP_ERR_TIMEOUT;
+
+    const size_t stripe_bytes = static_cast<size_t>(w) * kStripeRows * 2u;
+    ESP_RETURN_ON_ERROR(EnsureStripe(stripe_bytes), TAG, "stripe alloc");
+
+    const uint8_t* src = static_cast<const uint8_t*>(pixels);
+    const size_t row_bytes = static_cast<size_t>(w) * 2u;   // esp_lcd end coords are exclusive
+    for (uint16_t row = 0; row < h; row = static_cast<uint16_t>(row + kStripeRows)) {
+        const uint16_t rows_this = std::min<uint16_t>(kStripeRows, static_cast<uint16_t>(h - row));
+        memcpy(stripe_, src + static_cast<size_t>(row) * row_bytes,
+               static_cast<size_t>(rows_this) * row_bytes);
+        const uint32_t expect = done_count_.load(std::memory_order_acquire) + 1;
+        ESP_RETURN_ON_ERROR(
+            esp_lcd_panel_draw_bitmap(panel_, x, static_cast<uint16_t>(y + row),
+                                      static_cast<uint16_t>(x + w),
+                                      static_cast<uint16_t>(y + row + rows_this), stripe_),
+            TAG, "draw_bitmap");
+        if (!WaitDone(expect, 1000)) {
+            ESP_LOGE(TAG, "DrawBitmap tx timeout row=%u", static_cast<unsigned>(row));
+            return ESP_ERR_TIMEOUT;
+        }
     }
     return ESP_OK;
 }

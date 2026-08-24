@@ -120,6 +120,16 @@ typedef struct {
      */
     void (*on_custom)(uint16_t cmd, const uint8_t* payload, size_t len, void* ctx);
 
+    /**
+     * @brief Start/stop microphone capture on request from the Agent (App-initiated "listen").
+     * @param start  true = begin capturing and stream ASR audio; false = stop.
+     * @param max_ms Suggested max capture duration in ms (0 = until stopped); board-specific.
+     * @param ctx    User context.
+     * @note Optional; set only if AGENT_CAP_MIC is advertised. On start, the board drives its
+     *       mic → agent_link_asr_start()/asr_push()/asr_end() loop. Triggered by command 0x3C/0x3D.
+     */
+    void (*on_listen)(bool start, uint32_t max_ms, void* ctx);
+
     void* ctx;  ///< Opaque pointer passed through to all callbacks
 } agent_output_cb_t;
 

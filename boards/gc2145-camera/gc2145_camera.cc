@@ -2,7 +2,7 @@
 //
 // A minimal example board: bring up the GC2145 DVP sensor (via Espressif's esp32-camera component) at RGB565 240x240
 // a task that continuously grabs frames and blits them to the ST7789
-// Frames live in PSRAM; the LCD DMAs directly from them
+// Frames live in PSRAM; the ST7789 driver blits them out in stripes via an internal DMA buffer
 
 #include "board.h"
 #include "config.h"
@@ -80,12 +80,23 @@ private:
         sensor_t* s = esp_camera_sensor_get();
         if (s) {
             ESP_LOGI(TAG, "camera sensor PID=0x%04x (GC2145 expected)", s->id.PID);
-            // Orientation — flip these if the preview is upside down / mirrored on your module.
+            // Orientation
             s->set_vflip(s, 0);
             s->set_hmirror(s, 0);
+            RestartCaptureEngine(s);
         }
         ESP_LOGI(TAG, "camera ready (RGB565 240x240)");
         return ESP_OK;
+    }
+
+    // Pulsing CISCTL_restart_n (reg 0xfe bit4, active-low) low->high kicks it into streaming.
+    static void RestartCaptureEngine(sensor_t* s) {
+        if (!s->set_reg) return;
+        s->set_reg(s, 0xfe, 0xff, 0x00);   // CISCTL restart asserted, page 0
+        vTaskDelay(pdMS_TO_TICKS(20));
+        s->set_reg(s, 0xfe, 0xff, 0x10);   // CISCTL restart released, page 0
+        vTaskDelay(pdMS_TO_TICKS(20));
+        ESP_LOGI(TAG, "GC2145 capture engine restarted");
     }
 
     static void PreviewTaskEntry(void* arg) { static_cast<Gc2145CameraBoard*>(arg)->PreviewLoop(); }

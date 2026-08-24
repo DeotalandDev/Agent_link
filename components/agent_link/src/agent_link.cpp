@@ -28,6 +28,7 @@
 #include <string>
 #include <vector>
 #include "esp_log.h"
+#include "esp_timer.h"
 
 namespace {
 constexpr const char* TAG = "agent_link";
@@ -55,11 +56,24 @@ struct IoEntry {
     const agent_link_io_desc_t* desc;
     agent_io_actuate_cb_t       cb;
     void*                       ctx;
+    // Reading cache + reporting policy (see 0x35 GetReading / 0x36 SetReadingConfig).
+    uint8_t  policy_mode;      // 0=passthrough(default) 1=off 2=periodic(rate) 3=on-change
+    uint16_t policy_rate_hz;   // target rate when policy_mode == periodic
+    int64_t  last_sent_us;     // last time a reading was actually sent (for throttling)
+    int64_t  last_ts_us;       // last time push_reading was called (for 0x35 age_ms)
+    uint8_t  last_val[16];     // cached last value (fixed-size types <= 16B; for 0x35 + dedup)
+    uint8_t  last_len;         // cached value length (0 = none cached)
+    bool     has_last;         // whether last_val / last_ts_us are valid
 };
 
 IoEntry s_io[kMaxIo] = {};
 int     s_io_count = 0;
 bool    s_manifest_sent = false;  // whether the manifest has been sent in this connection
+uint32_t s_manifest_rev = 1;      // manifest revision; bumped by agent_link_notify_manifest_changed()
+
+// Per-endpoint reporting policy values (0x36 SetReadingConfig). Default 0 = passthrough so a
+// zero-initialized IoEntry keeps the pre-existing "forward every push_reading" behavior.
+enum { IO_POLICY_PASSTHROUGH = 0, IO_POLICY_OFF = 1, IO_POLICY_PERIODIC = 2, IO_POLICY_ONCHANGE = 3 };
 
 // Single exit point for data-plane calls that are not wired yet (push_voice / recording_*).
 esp_err_t not_ready(const char* what) {
@@ -81,6 +95,15 @@ const IoEntry* FindIo(const char* id) {
     return nullptr;
 }
 
+// Look up an endpoint index by id (-1 if not found); used where the entry must be mutated.
+int FindIoIndex(const char* id) {
+    if (!id) return -1;
+    for (int i = 0; i < s_io_count; ++i)
+        if (s_io[i].desc && s_io[i].desc->id && strcmp(s_io[i].desc->id, id) == 0)
+            return i;
+    return -1;
+}
+
 // Fixed byte size of a value type; BLOB is variable-length and returns -1. Used for push_reading length checks.
 int IoValueSize(agent_val_t t) {
     switch (t) {
@@ -92,6 +115,7 @@ int IoValueSize(agent_val_t t) {
     case AGENT_VAL_VEC2: return 8;
     case AGENT_VAL_VEC3: return 12;
     case AGENT_VAL_BLOB: return -1;
+    case AGENT_VAL_STR:  return -1;
     }
     return -1;
 }
@@ -107,6 +131,7 @@ const char* ValTypeName(agent_val_t t) {
     case AGENT_VAL_VEC2: return "vec2";
     case AGENT_VAL_VEC3: return "vec3";
     case AGENT_VAL_BLOB: return "blob";
+    case AGENT_VAL_STR:  return "str";
     }
     return "blob";
 }
@@ -129,9 +154,63 @@ void JsonEsc(std::string& out, const char* s) {
     }
 }
 
-// Serialize s_io[] into the manifest JSON array (see docs/device-io.md §2).
+// ── D1: rich outputs (LED / haptic / screen text) exposed as generic OUT endpoints ──
+// The rich callbacks (on_led / on_haptic / on_show_text) had no downlink command that reached
+// them. The SDK now auto-registers a synthetic OUT endpoint for each rich capability the board
+// actually wired, so the Agent drives them through the same 0x33 IoActuate path as any actuator.
+// Board code is unchanged — it just keeps providing the callbacks.
+void SynthLedCb(const char* /*id*/, const uint8_t* args, size_t len, void* /*ctx*/) {
+    if (len < 4 || !(s_have_out && s_out.on_led)) return;
+    const uint32_t rgb = static_cast<uint32_t>(args[0]) | (static_cast<uint32_t>(args[1]) << 8) |
+                         (static_cast<uint32_t>(args[2]) << 16) | (static_cast<uint32_t>(args[3]) << 24);
+    s_out.on_led(rgb, s_out.ctx);
+}
+void SynthHapticCb(const char* /*id*/, const uint8_t* args, size_t len, void* /*ctx*/) {
+    if (len < 2 || !(s_have_out && s_out.on_haptic)) return;
+    const uint32_t ms = static_cast<uint32_t>(args[0]) | (static_cast<uint32_t>(args[1]) << 8);
+    s_out.on_haptic(ms, s_out.ctx);
+}
+void SynthScreenCb(const char* /*id*/, const uint8_t* args, size_t len, void* /*ctx*/) {
+    if (!(s_have_out && s_out.on_show_text)) return;
+    char buf[256];
+    const size_t n = (len < sizeof(buf) - 1) ? len : sizeof(buf) - 1;
+    memcpy(buf, args, n);
+    buf[n] = '\0';
+    s_out.on_show_text(buf, s_out.ctx);
+}
+
+// Static descriptors (register_io stores the pointer, so these must outlive the call).
+const agent_link_io_desc_t kSynthLed = {
+    .id = "led0", .dir = AGENT_IO_OUT, .kind = "led", .value = AGENT_VAL_RGB,
+    .desc = "status LED color, 0x00RRGGBB",
+};
+const agent_link_io_desc_t kSynthHaptic = {
+    .id = "motor0", .dir = AGENT_IO_OUT, .kind = "haptic", .value = AGENT_VAL_U16,
+    .unit = "ms", .desc = "vibration motor, duration in ms",
+};
+const agent_link_io_desc_t kSynthScreen = {
+    .id = "screen0", .dir = AGENT_IO_OUT, .kind = "screen.text", .value = AGENT_VAL_STR,
+    .desc = "text display",
+};
+
+// Register synthetic endpoints for whichever rich outputs the board wired + advertised via caps.
+void RegisterSyntheticEndpoints() {
+    if (!s_have_out) return;
+    if ((s_cfg.caps & AGENT_CAP_LED)    && s_out.on_led       && !FindIo("led0"))
+        agent_link_register_io(&kSynthLed, SynthLedCb, nullptr);
+    if ((s_cfg.caps & AGENT_CAP_HAPTIC) && s_out.on_haptic    && !FindIo("motor0"))
+        agent_link_register_io(&kSynthHaptic, SynthHapticCb, nullptr);
+    if ((s_cfg.caps & AGENT_CAP_SCREEN) && s_out.on_show_text && !FindIo("screen0"))
+        agent_link_register_io(&kSynthScreen, SynthScreenCb, nullptr);
+}
+
+// Serialize the manifest as an object envelope {proto, rev, caps, io:[...]} (see docs/agent_link_ble.md §6.2).
 std::string BuildManifestJson() {
-    std::string s = "[";
+    std::string s = "{\"proto\":";
+    s += std::to_string(AGENT_LINK_PROTO_VERSION);
+    s += ",\"rev\":";  s += std::to_string(s_manifest_rev);
+    s += ",\"caps\":"; s += std::to_string(static_cast<unsigned>(s_cfg.caps));
+    s += ",\"io\":[";
     bool first = true;
     for (int i = 0; i < s_io_count; ++i) {
         const agent_link_io_desc_t* d = s_io[i].desc;
@@ -142,8 +221,9 @@ std::string BuildManifestJson() {
         s += "\",\"dir\":\"";  s += (d->dir == AGENT_IO_OUT ? "out" : "in");
         s += "\",\"kind\":\""; JsonEsc(s, d->kind);
         s += "\",\"value\":\""; s += ValTypeName(d->value); s += "\"";
-        if (d->unit && d->unit[0]) { s += ",\"unit\":\""; JsonEsc(s, d->unit); s += "\""; }
-        if (d->desc && d->desc[0]) { s += ",\"desc\":\""; JsonEsc(s, d->desc); s += "\""; }
+        if (d->unit && d->unit[0])                 { s += ",\"unit\":\""; JsonEsc(s, d->unit); s += "\""; }
+        if (d->desc && d->desc[0])                 { s += ",\"desc\":\""; JsonEsc(s, d->desc); s += "\""; }
+        if (d->display_name && d->display_name[0]) { s += ",\"name\":\""; JsonEsc(s, d->display_name); s += "\""; }
         if (d->range_min != d->range_max) {
             char b[64];
             snprintf(b, sizeof b, ",\"range\":[%g,%g]",
@@ -155,12 +235,17 @@ std::string BuildManifestJson() {
             snprintf(b, sizeof b, ",\"rate_hz\":%u", static_cast<unsigned>(d->rate_hz));
             s += b;
         }
+        if (d->event == AGENT_EVT_ON_CHANGE)       s += ",\"event\":\"change\"";
+        else if (d->event == AGENT_EVT_THRESHOLD)  s += ",\"event\":\"threshold\"";
+        if (d->audience == AGENT_AUD_USER)         s += ",\"audience\":\"user\"";
+        if (d->enum_json && d->enum_json[0])       { s += ",\"enum\":"; s += d->enum_json; }
+        if (d->default_json && d->default_json[0]) { s += ",\"default\":"; s += d->default_json; }
         if (d->dir == AGENT_IO_OUT && d->args_schema && d->args_schema[0]) {
             s += ",\"args\":"; s += d->args_schema;   // args_schema is itself JSON
         }
         s += "}";
     }
-    s += "]";
+    s += "]}";
     return s;
 }
 
@@ -291,6 +376,70 @@ void OnCtrlFrame(const uint8_t* data, size_t len) {
     } else if (f.command_id == 0x34) {
         // 0x34 GetIoManifest: App-initiated fetch -> (re)send the manifest (0x18), then reply with the usual ACK.
         SendManifest(/*force=*/true);
+    } else if (f.command_id == 0x35) {
+        // 0x35 GetReading: payload = [id_len][id]; reply extra = [val_type][age_ms(2,LE)][value] from cache.
+        const std::vector<uint8_t>& pl = f.payload;
+        char io_id[64];
+        if (pl.empty() || pl[0] == 0 || pl[0] >= sizeof(io_id) || 1u + pl[0] > pl.size()) {
+            status = 1; error = 1004;  // InvalidPayload
+        } else {
+            memcpy(io_id, pl.data() + 1, pl[0]);
+            io_id[pl[0]] = '\0';
+            const int idx = FindIoIndex(io_id);
+            if (idx < 0 || s_io[idx].desc->dir != AGENT_IO_IN) {
+                status = 1; error = 1003;              // unknown / non-readable id
+            } else if (!s_io[idx].has_last) {
+                status = 1; error = 1005;              // NoData: nothing cached yet
+            } else {
+                const int64_t age = (esp_timer_get_time() - s_io[idx].last_ts_us) / 1000;
+                const uint16_t age_ms = (age < 0) ? 0 : (age > 0xFFFF ? 0xFFFF : static_cast<uint16_t>(age));
+                size_t k = 0;
+                extra[k++] = static_cast<uint8_t>(s_io[idx].desc->value);
+                extra[k++] = age_ms & 0xFF;
+                extra[k++] = (age_ms >> 8) & 0xFF;
+                memcpy(extra + k, s_io[idx].last_val, s_io[idx].last_len);
+                k += s_io[idx].last_len;
+                extra_len = k;
+            }
+        }
+    } else if (f.command_id == 0x36) {
+        // 0x36 SetReadingConfig: payload = [id_len][id][mode(1)][rate_hz(2,LE)]. Handled entirely in the SDK.
+        const std::vector<uint8_t>& pl = f.payload;
+        char io_id[64];
+        if (pl.empty() || pl[0] == 0 || pl[0] >= sizeof(io_id) ||
+            static_cast<size_t>(2 + pl[0]) > pl.size()) {
+            status = 1; error = 1004;
+        } else {
+            const uint8_t id_len = pl[0];
+            memcpy(io_id, pl.data() + 1, id_len);
+            io_id[id_len] = '\0';
+            const uint8_t mode = pl[1 + id_len];
+            uint16_t rate = 0;
+            if (static_cast<size_t>(4 + id_len) <= pl.size())
+                rate = static_cast<uint16_t>(pl[2 + id_len]) | (static_cast<uint16_t>(pl[3 + id_len]) << 8);
+            const int idx = FindIoIndex(io_id);
+            if (idx < 0 || s_io[idx].desc->dir != AGENT_IO_IN) { status = 1; error = 1003; }
+            else if (mode > IO_POLICY_ONCHANGE)                { status = 1; error = 1004; }
+            else {
+                s_io[idx].policy_mode    = mode;
+                s_io[idx].policy_rate_hz = rate;
+                s_io[idx].last_sent_us   = 0;
+                ESP_LOGI(TAG, "reading config '%s': mode=%u rate=%uHz", io_id, mode, static_cast<unsigned>(rate));
+            }
+        }
+    } else if (f.command_id == 0x3C) {
+        // 0x3C StartCapture: payload = [mode(1)][max_ms(2,LE)] -> on_listen(true, max_ms). Requires MIC + on_listen.
+        if (!(s_cfg.caps & AGENT_CAP_MIC) || !(s_have_out && s_out.on_listen)) {
+            status = 1; error = 1002;                  // NotCapable
+        } else {
+            uint32_t max_ms = 0;
+            if (f.payload.size() >= 3)
+                max_ms = static_cast<uint32_t>(f.payload[1]) | (static_cast<uint32_t>(f.payload[2]) << 8);
+            s_out.on_listen(true, max_ms, s_out.ctx);
+        }
+    } else if (f.command_id == 0x3D) {
+        // 0x3D StopCapture -> on_listen(false, 0).
+        if (s_have_out && s_out.on_listen) s_out.on_listen(false, 0, s_out.ctx);
     } else if (s_have_out && s_out.on_command &&
                s_out.on_command(f.command_id, f.payload.data(), f.payload.size(),
                                 extra, sizeof(extra), &extra_len, s_out.ctx)) {
@@ -356,6 +505,10 @@ esp_err_t agent_link_init(const agent_link_config_t* cfg) {
                                             s_cfg.firmware_rev);
         break;
     }
+
+    // D1: expose wired rich outputs (LED / haptic / screen) as generic OUT endpoints in the manifest.
+    RegisterSyntheticEndpoints();
+
     const char* tx_name = s_cfg.transport == AGENT_TRANSPORT_WIFI ? "wifi"
                         : s_cfg.transport == AGENT_TRANSPORT_BOTH ? "both(ble)" : "ble";
     ESP_LOGI(TAG, "init: name='%s' caps=0x%04x proto=v%d transport=%s io=%d",
@@ -460,9 +613,10 @@ esp_err_t agent_link_push_reading(const char* id, const void* value, size_t len)
     if (!s_tx || !s_tx->send_ctrl)  return ESP_ERR_INVALID_STATE;
     if (s_tx->is_ready && !s_tx->is_ready(s_tx->impl)) return ESP_ERR_INVALID_STATE;
 
-    const IoEntry* e = FindIo(id);
-    if (!e || e->desc->dir != AGENT_IO_IN) return ESP_ERR_NOT_FOUND;  // only registered IN endpoints may report
-    const int want = IoValueSize(e->desc->value);
+    const int idx = FindIoIndex(id);
+    if (idx < 0 || s_io[idx].desc->dir != AGENT_IO_IN) return ESP_ERR_NOT_FOUND;  // only registered IN endpoints may report
+    IoEntry& e = s_io[idx];
+    const int want = IoValueSize(e.desc->value);
     if (want >= 0 && static_cast<size_t>(want) != len) {
         ESP_LOGW(TAG, "push_reading '%s': len=%u does not match expected %dB for type",
                  id, static_cast<unsigned>(len), want);
@@ -471,17 +625,63 @@ esp_err_t agent_link_push_reading(const char* id, const void* value, size_t len)
     const size_t id_len = strlen(id);
     if (id_len == 0 || id_len > 255) return ESP_ERR_INVALID_ARG;
 
+    // Cache the latest value (for 0x35 GetReading + on-change dedup) before applying the policy.
+    const int64_t now_us = esp_timer_get_time();
+    e.last_ts_us = now_us;
+    bool same_as_last = false;
+    if (len <= sizeof(e.last_val)) {
+        same_as_last = e.has_last && e.last_len == len && memcmp(e.last_val, value, len) == 0;
+        memcpy(e.last_val, value, len);
+        e.last_len = static_cast<uint8_t>(len);
+        e.has_last = true;
+    }
+
+    // Reporting policy set via 0x36 (default 0 = passthrough).
+    switch (e.policy_mode) {
+    case IO_POLICY_OFF:
+        return ESP_OK;                                         // dropped by policy
+    case IO_POLICY_PERIODIC: {
+        const int64_t period_us = e.policy_rate_hz ? (1000000 / e.policy_rate_hz) : 0;
+        if (period_us && e.last_sent_us && (now_us - e.last_sent_us) < period_us)
+            return ESP_OK;                                     // throttled to rate_hz
+        break;
+    }
+    case IO_POLICY_ONCHANGE:
+        if (same_as_last) return ESP_OK;                       // unchanged (dedup for fixed-size <=16B values)
+        break;
+    default:
+        break;                                                 // passthrough
+    }
+
     std::vector<uint8_t> p;
     p.reserve(1 + id_len + 1 + len);
     p.push_back(static_cast<uint8_t>(id_len));
     const uint8_t* idb = reinterpret_cast<const uint8_t*>(id);
     p.insert(p.end(), idb, idb + id_len);
-    p.push_back(static_cast<uint8_t>(e->desc->value));
+    p.push_back(static_cast<uint8_t>(e.desc->value));
     const uint8_t* v = static_cast<const uint8_t*>(value);
     p.insert(p.end(), v, v + len);
 
     auto ev = agentlink::BuildEvent(0x19, p.data(), p.size());
-    return s_tx->send_ctrl(s_tx->impl, ev.data(), ev.size());
+    const esp_err_t r = s_tx->send_ctrl(s_tx->impl, ev.data(), ev.size());
+    if (r == ESP_OK) e.last_sent_us = now_us;
+    return r;
+}
+
+// ── Generic I/O: notify the Agent that the manifest changed (runtime endpoint add/remove) ──
+esp_err_t agent_link_notify_manifest_changed(void) {
+    if (!s_tx || !s_tx->send_ctrl) return ESP_ERR_INVALID_STATE;
+    ++s_manifest_rev;
+    // Event 0x1A ManifestChanged: payload = [rev(4, LE)]. Best-effort; the App re-fetches via 0x34.
+    const uint8_t p[4] = { static_cast<uint8_t>(s_manifest_rev),       static_cast<uint8_t>(s_manifest_rev >> 8),
+                           static_cast<uint8_t>(s_manifest_rev >> 16), static_cast<uint8_t>(s_manifest_rev >> 24) };
+    if (s_tx->is_ready && s_tx->is_ready(s_tx->impl)) {
+        auto ev = agentlink::BuildEvent(0x1A, p, sizeof p);
+        (void)s_tx->send_ctrl(s_tx->impl, ev.data(), ev.size());
+    }
+    SendManifest(/*force=*/true);   // re-push the full manifest carrying the new rev
+    ESP_LOGI(TAG, "manifest changed -> rev=%u", static_cast<unsigned>(s_manifest_rev));
+    return ESP_OK;
 }
 
 // ── Data plane: voice uplink (BLE: GATT Notify 0xFFA1, event 0x40 VoiceChunk) ─────

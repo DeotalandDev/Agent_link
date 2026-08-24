@@ -19,6 +19,8 @@ elseif(CONFIG_BOARD_TYPE_ESP32S3_ES8311_ASR)
     set(BOARD_DIR "es8311-asr")
 elseif(CONFIG_BOARD_TYPE_ESP32S3_GC2145_CAMERA)
     set(BOARD_DIR "gc2145-camera")
+elseif(CONFIG_BOARD_TYPE_ESP32S3_ROROLEE_BASIC)
+    set(BOARD_DIR "rorolee-basic")
 # Add a new board:Add the line elseif(CONFIG_BOARD_TYPE_XXX) set(BOARD_DIR "your-board")
 endif()
 

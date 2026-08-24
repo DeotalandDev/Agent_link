@@ -1,16 +1,15 @@
 {
     "manufacturer": "deotaland",
-    "type": "gc2145-camera",
+    "type": "rorolee-s3",
     "target": "esp32s3",
     "builds": [
         {
-            "name": "gc2145-camera",
+            "name": "rorolee-s3",
             "sdkconfig_append": [
                 "CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y",
                 "CONFIG_SPIRAM=y",
-                "CONFIG_SPIRAM_MODE_OCT=y",
-                "CONFIG_SPIRAM_SPEED_80M=y",
-                "CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y"
+                "CONFIG_RTC_CLK_SRC_EXT_CRYS=y",
+                "CONFIG_BT_CTRL_LPCLK_SEL_EXT_32K_XTAL=y"
             ]
         }
     ]

@@ -1,5 +1,4 @@
 #pragma once
-// ST7789 240x240 SPI LCD driver with full-frame DrawBitmap
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -28,7 +27,7 @@ struct St7789LcdConfig {
     uint16_t height         = 240;
     uint32_t pclk_hz        = 40 * 1000 * 1000;
     uint8_t  spi_mode       = 0;        // ST7789 is SPI mode 0
-    bool     invert_color   = true;     // ST7789 usually needs inversion ON for correct colors
+    bool     invert_color   = true;
     bool     bgr            = false;    // set true if red and blue look swapped
     bool     mirror_x       = false;
     bool     mirror_y       = false;
@@ -68,6 +67,7 @@ public:
 
 private:
     bool WaitDone(uint32_t target, uint32_t timeout_ms);
+    esp_err_t EnsureStripe(size_t bytes);
 
     St7789LcdConfig           cfg_        = {};
     esp_lcd_panel_io_handle_t io_         = nullptr;
