@@ -9,9 +9,16 @@
 #include "st7789_lcd.h"
 
 #include "esp_camera.h"
+#include "img_converters.h"
 #include "esp_log.h"
+#include "driver/gpio.h"
+#include "agent_link.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+
+#include <atomic>
+#include <cstdlib>
+#include <cstring>
 
 #define TAG "Gc2145Cam"
 
@@ -22,6 +29,8 @@ public:
         lcd_ok_ = true;
         if (InitCamera() != ESP_OK) { ESP_LOGE(TAG, "camera init failed"); lcd_.FillSolid(rgb565::kRed); return; }
         cam_ok_ = true;
+        InitButton();              // BOOT key -> snapshot
+        RegisterCaptureEndpoint(); // App/LLM -> snapshot (MCP actuator "camera0")
         xTaskCreate(&Gc2145CameraBoard::PreviewTaskEntry, "cam_preview", 4096, this, 5, &preview_task_);
     }
 
@@ -99,14 +108,85 @@ private:
         ESP_LOGI(TAG, "GC2145 capture engine restarted");
     }
 
+    static void LockExposureWhiteBalance(sensor_t* s) {
+        if (!s->set_reg) return;
+        s->set_reg(s, 0xfe, 0xff, 0x00);   // select register page 0
+        s->set_reg(s, 0xb6, 0x01, 0x00);   // AEC enable (reg 0xb6 bit0) -> 0: hold exposure at the converged value
+        s->set_reg(s, 0x82, 0x02, 0x00);   // AWB_en (reg 0x82 bit1) -> 0: hold white balance
+        ESP_LOGI(TAG, "AEC/AWB locked — exposure & white balance frozen for a steady preview");
+    }
+
+    void RegisterCaptureEndpoint() {
+        static agent_link_io_desc_t desc = {};
+        desc.id           = "camera0";
+        desc.dir          = AGENT_IO_OUT;
+        desc.kind         = "camera.capture";
+        desc.value        = AGENT_VAL_BOOL;
+        desc.desc         = "Capture a still image from the camera and upload it to the app";
+        desc.display_name = "Camera Snapshot";
+        agent_link_register_io(&desc, &Gc2145CameraBoard::OnCaptureCmd, this);
+    }
+
+    // 0x33 IoActuate for "camera0". Runs on an SDK thread ,just flag the preview loop to do the capture + encode + send.
+    static void OnCaptureCmd(const char* /*id*/, const uint8_t* /*args*/, size_t /*len*/, void* ctx) {
+        auto* self = static_cast<Gc2145CameraBoard*>(ctx);
+        if (self) { self->capture_req_.store(true, std::memory_order_release); ESP_LOGI(TAG, "snapshot requested (App)"); }
+    }
+
+    // Snapshot button, polled in the preview loop with edge detection. This button is ACTIVE-HIGH
+    void InitButton() {
+        gpio_config_t c = {};
+        c.pin_bit_mask = 1ULL << CAPTURE_BUTTON_PIN;
+        c.mode         = GPIO_MODE_INPUT;
+        c.pull_up_en   = GPIO_PULLUP_DISABLE;
+        c.pull_down_en = GPIO_PULLDOWN_ENABLE;   // active-high: idle low, pressed = high
+        c.intr_type    = GPIO_INTR_DISABLE;      // polled, not interrupt-driven
+        gpio_config(&c);
+        ESP_LOGI(TAG, "snapshot button ready: press GPIO%d to capture", (int)CAPTURE_BUTTON_PIN);
+    }
+
+    // Encode the current RGB565 frame to JPEG and hand it to the SDK's image channel
+    // Must run on the ORIGINAL frame bytes, before any LCD byte-swap. send_image returns fast (async worker).
+    void SendSnapshot(camera_fb_t* fb) {
+        uint8_t* jpg = nullptr; size_t jpg_len = 0;
+        if (!frame2jpg(fb, 80 /*quality*/, &jpg, &jpg_len)) { ESP_LOGE(TAG, "snapshot: frame2jpg failed"); return; }
+        esp_err_t r = agent_link_send_image(jpg, jpg_len, AGENT_IMG_JPEG,
+                                            static_cast<uint16_t>(fb->width), static_cast<uint16_t>(fb->height));
+        ESP_LOGI(TAG, "snapshot: %ux%u -> %uB jpeg, send=%s",
+                 (unsigned)fb->width, (unsigned)fb->height, (unsigned)jpg_len, esp_err_to_name(r));
+        free(jpg);
+    }
+
     static void PreviewTaskEntry(void* arg) { static_cast<Gc2145CameraBoard*>(arg)->PreviewLoop(); }
 
     void PreviewLoop() {
         ESP_LOGI(TAG, "preview loop started");
         uint32_t frames = 0;
+        bool btn_pressed_prev = false;   // active-high button idles low
+        bool ae_locked = false;          // AEC/AWB frozen once converged (stops the static-scene "breathing")
         while (true) {
             camera_fb_t* fb = esp_camera_fb_get();
             if (!fb) { ESP_LOGW(TAG, "fb_get failed"); vTaskDelay(pdMS_TO_TICKS(10)); continue; }
+
+#if CAMERA_MASK_TOP_ROWS > 0
+            // Overpaint the sensor's noisy top rows with the first clean row below, 
+            // so the flickering black/white band is hidden in both the preview and any snapshot.
+            // Done before everything else.
+            {
+                uint8_t* b = static_cast<uint8_t*>(fb->buf);
+                const size_t rb = static_cast<size_t>(fb->width) * 2u;
+                for (int r = 0; r < CAMERA_MASK_TOP_ROWS; ++r)
+                    memcpy(b + static_cast<size_t>(r) * rb, b + static_cast<size_t>(CAMERA_MASK_TOP_ROWS) * rb, rb);
+            }
+#endif
+
+            // Snapshot trigger: button rising edge (active-high; polled once per frame = natural debounce) or App command.
+            const bool btn_pressed = (gpio_get_level(CAPTURE_BUTTON_PIN) != 0);   // high = pressed
+            if (!btn_pressed_prev && btn_pressed) { capture_req_.store(true, std::memory_order_release); ESP_LOGI(TAG, "snapshot requested (button)"); }
+            btn_pressed_prev = btn_pressed;
+            // Encode + send from the ORIGINAL RGB565, before the LCD byte-swap below would corrupt the JPEG colors.
+            if (capture_req_.exchange(false, std::memory_order_acq_rel)) SendSnapshot(fb);
+
 #if CAMERA_RGB565_BYTE_SWAP
             // Camera RGB565 is little-endian per pixel; ST7789 latches big-endian. Swap in place.
             uint16_t* p = reinterpret_cast<uint16_t*>(fb->buf);
@@ -115,14 +195,20 @@ private:
             // DrawBitmap blocks until the DMA finishes, so returning the fb right after is safe.
             (void)lcd_.DrawBitmap(0, 0, static_cast<uint16_t>(fb->width), static_cast<uint16_t>(fb->height), fb->buf);
             esp_camera_fb_return(fb);
-            if ((++frames % 100) == 0) ESP_LOGD(TAG, "preview: %u frames", (unsigned)frames);
+
+            // Once AEC/AWB have had ~50 frames (~2s) to settle, lock them so the static scene stops drifting.
+            if (!ae_locked && ++frames >= 50) {
+                sensor_t* s = esp_camera_sensor_get();
+                if (s) { LockExposureWhiteBalance(s); ae_locked = true; }
+            }
         }
     }
 
-    St7789Lcd    lcd_;
-    bool         lcd_ok_       = false;
-    bool         cam_ok_       = false;
-    TaskHandle_t preview_task_ = nullptr;
+    St7789Lcd         lcd_;
+    bool              lcd_ok_       = false;
+    bool              cam_ok_       = false;
+    TaskHandle_t      preview_task_ = nullptr;
+    std::atomic<bool> capture_req_{false};   // set by App command / BOOT button; consumed by the preview loop
 };
 
 DECLARE_BOARD(Gc2145CameraBoard);

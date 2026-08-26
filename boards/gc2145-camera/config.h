@@ -8,7 +8,7 @@
 // Camera: DVP 8-bit + SCCB(I2C) + XCLK. -1 = not wired
 #define CAM_PIN_PWDN            -1              // power-down
 #define CAM_PIN_RESET           -1              // reset
-#define CAM_PIN_XCLK            GPIO_NUM_15     // master clock out to sensor (20 MHz)
+#define CAM_PIN_XCLK            GPIO_NUM_15     // master clock out to sensor
 #define CAM_PIN_SIOD            GPIO_NUM_4      // SCCB SDA
 #define CAM_PIN_SIOC            GPIO_NUM_5      // SCCB SCL
 #define CAM_PIN_D7              GPIO_NUM_16     // Y9
@@ -22,7 +22,13 @@
 #define CAM_PIN_VSYNC           GPIO_NUM_6
 #define CAM_PIN_HREF            GPIO_NUM_7
 #define CAM_PIN_PCLK            GPIO_NUM_13
+
 #define CAM_XCLK_FREQ_HZ        (20 * 1000 * 1000)
+
+// Snapshot trigger button — idles low (internal pull-down), driven high when pressed
+#define CAPTURE_BUTTON_PIN      GPIO_NUM_3
+
+#define CAMERA_MASK_TOP_ROWS 8
 
 // set this to 1 to byte-swap each pixel before drawing
 #define CAMERA_RGB565_BYTE_SWAP 0
@@ -37,6 +43,7 @@
 #define DISPLAY_BL_PIN          (-1)
 #define DISPLAY_WIDTH           240
 #define DISPLAY_HEIGHT          240
+
 #define DISPLAY_SPI_CLK_HZ      (40 * 1000 * 1000)
 #define DISPLAY_SPI_MODE        0
 

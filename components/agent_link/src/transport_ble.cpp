@@ -11,7 +11,7 @@
 //    Voice uplink (device -> App): Service A 0xFFA0, GATT Notify 0xFFA1 (event 0x40 VoiceChunk).
 //    TTS downlink (App -> device): L2CAP CoC (PSM 0x0081) receive, forwarded to the core.
 //    ASR/recording uplink (device -> App): L2CAP CoC (PSM 0x0081) send + control events 0x52/0x53.
-// Not done: file download (0x06) / OTA over L2CAP, Service B, encryption
+//    Image snapshot uplink (device -> App): L2CAP CoC (PSM 0x0082) send + control events 0x54/0x55.
 #include "agent_link_transport.h"
 
 #include <cstring>
@@ -110,6 +110,13 @@ constexpr uint16_t kL2capMps = 512;     // per-packet size (the SDU rx buffer is
 struct ble_l2cap_chan* s_l2cap_chan = nullptr;
 bool s_l2cap_connected = false;
 std::atomic<bool> s_l2cap_stalled{false};  // ble_l2cap_send returned ESTALLED; wait for COC_TX_UNSTALLED before the next send
+
+// L2CAP CoC ( image snapshot uplink, PSM 0x0082)
+// A separate PSM from audio so image snapshots and ASR audio can stream concurrently without interleaving on a single byte channel.
+constexpr uint16_t kImgPsm = 0x0082;
+struct ble_l2cap_chan* s_img_chan = nullptr;
+bool s_img_connected = false;
+std::atomic<bool> s_img_stalled{false};
 
 void StartAdvertising();
 
@@ -249,6 +256,29 @@ struct RecordingState {
 RecordingState s_rec;
 uint32_t       s_rec_counter = 0;
 
+// Image snapshot uplink (L2CAP CoC PSM 0x0082 + control events 0x54/0x55)
+// its own PSM and state so it runs concurrently with the ASR audio stream. One image at a time.
+// 0x54 ImageStart carries format/size; raw bytes flow over L2CAP; 0x55 ImageEnd reports status/valid_bytes.
+constexpr size_t kImgQueueHardCap = 256 * 1024;   // one snapshot fits easily; cap backstops a stuck link
+struct ImageState {
+    std::atomic<bool>     active{false};
+    std::atomic<bool>     end_req{false};
+    std::atomic<bool>     truncated{false};   // overflow / disconnect / send failure -> 0x55 status=1
+    std::atomic<bool>     complete{true};     // caller's complete flag, captured at end
+    uint32_t              transfer_id = 0;
+    std::atomic<uint32_t> sent_bytes{0};      // -> 0x55 valid_bytes
+    std::queue<std::vector<uint8_t>> q;
+    std::mutex            mtx;
+    std::atomic<size_t>   queued_bytes{0};
+    uint8_t               format = 0;          // agent_image_format_t, carried in 0x54
+    uint16_t              width = 0;
+    uint16_t              height = 0;
+    uint32_t              total_len = 0;       // total image bytes, carried in 0x54
+    TaskHandle_t          task = nullptr;
+};
+ImageState s_img;
+uint32_t   s_img_counter = 0;
+
 // Assemble one 0x40 VoiceChunk frame and notify it on 0xFFA1. len <= kMaxPcmSingleMbuf.
 bool VoiceSendChunk(uint32_t sequence, const uint8_t* data, size_t len) {
     uint8_t f[kMaxFrameSingleMbuf];
@@ -382,12 +412,13 @@ bool RearmL2capRx(struct ble_l2cap_chan* chan) {
     return true;
 }
 
-// L2CAP event callback (runs on the NimBLE host task; do not block).
-int L2capEvent(struct ble_l2cap_event* event, void* /*arg*/) {
+// L2CAP event callback for BOTH CoC servers (audio PSM 0x0081, image PSM 0x0082). The arg passed to ble_l2cap_create_server tells them apart.
+// Runs on the NimBLE host task
+int L2capEvent(struct ble_l2cap_event* event, void* arg) {
+    const bool is_img = (reinterpret_cast<uintptr_t>(arg) == kImgPsm);
     switch (event->type) {
     case BLE_L2CAP_EVENT_COC_ACCEPT: {
-        // Critical: allocate the SDU rx buffer + recv_ready first, or the credit handshake never
-        // completes (NimBLE rejects with "No Resources"; iOS reports a didOpen error).
+        // Critical: allocate the SDU rx buffer + recv_ready first, or the credit handshake never completes. Same for both PSMs.
         struct os_mbuf* rx = os_msys_get_pkthdr(kL2capMps, 0);
         if (!rx) return BLE_HS_ENOMEM;
         int rc = ble_l2cap_recv_ready(event->accept.chan, rx);
@@ -395,41 +426,52 @@ int L2capEvent(struct ble_l2cap_event* event, void* /*arg*/) {
         return 0;
     }
     case BLE_L2CAP_EVENT_COC_CONNECTED:
-        if (event->connect.status == 0) {
-            s_l2cap_chan = event->connect.chan;
-            s_l2cap_connected = true;
-            ESP_LOGI(TAG, "L2CAP CoC connected (PSM 0x%04X)", kL2capPsm);
-        } else {
-            ESP_LOGW(TAG, "L2CAP connect failed status=%d", event->connect.status);
+        if (event->connect.status != 0) {
+            ESP_LOGW(TAG, "L2CAP connect failed (PSM 0x%04X) status=%d",
+                     is_img ? kImgPsm : kL2capPsm, event->connect.status);
+            return 0;
         }
+        if (is_img) { s_img_chan = event->connect.chan;   s_img_connected = true; }
+        else        { s_l2cap_chan = event->connect.chan; s_l2cap_connected = true; }
+        ESP_LOGI(TAG, "L2CAP CoC connected (PSM 0x%04X)", is_img ? kImgPsm : kL2capPsm);
         return 0;
     case BLE_L2CAP_EVENT_COC_DISCONNECTED:
-        s_l2cap_chan = nullptr;
-        s_l2cap_connected = false;
-        s_l2cap_stalled.store(false, std::memory_order_release);  // unblock a stalled recording worker so it can exit
-        s_rec.truncated.store(true, std::memory_order_release);   // channel gone mid-stream -> truncate (0x53 status=1 still goes over GATT)
-        s_rec.end_req.store(true, std::memory_order_release);
-        ESP_LOGI(TAG, "L2CAP CoC disconnected");
+        if (is_img) {
+            s_img_chan = nullptr;
+            s_img_connected = false;
+            s_img_stalled.store(false, std::memory_order_release);   // unblock a stalled image worker so it can exit
+            s_img.truncated.store(true, std::memory_order_release);  // channel gone mid-stream -> truncate (0x55 status=1)
+            s_img.end_req.store(true, std::memory_order_release);
+        } else {
+            s_l2cap_chan = nullptr;
+            s_l2cap_connected = false;
+            s_l2cap_stalled.store(false, std::memory_order_release); // unblock a stalled recording worker so it can exit
+            s_rec.truncated.store(true, std::memory_order_release);  // channel gone mid-stream -> truncate (0x53 status=1 still goes over GATT)
+            s_rec.end_req.store(true, std::memory_order_release);
+        }
+        ESP_LOGI(TAG, "L2CAP CoC disconnected (PSM 0x%04X)", is_img ? kImgPsm : kL2capPsm);
         return 0;
     case BLE_L2CAP_EVENT_COC_DATA_RECEIVED: {
         struct os_mbuf* sdu = event->receive.sdu_rx;
-        const uint16_t total = OS_MBUF_PKTLEN(sdu);
-        // Copy out in chunks and forward to the core. The only downlink data plane right now is TTS voice -> AGENT_STREAM_VOICE.
-        // Do not block here (NimBLE host task) — the core/board should enqueue quickly and play in another task.
-        uint8_t buf[kL2capMps];
-        for (uint16_t off = 0; off < total; ) {
-            const uint16_t n = static_cast<uint16_t>((total - off < kL2capMps) ? (total - off) : kL2capMps);
-            if (os_mbuf_copydata(sdu, off, n, buf) == 0 && s_on_stream) {
-                s_on_stream(AGENT_STREAM_VOICE, buf, n);
+        // The image channel is uplink-only,ignore any downlink bytes on it. The audio channel carries TTS voice downlink. Never block here (host task).
+        if (!is_img) {
+            const uint16_t total = OS_MBUF_PKTLEN(sdu);
+            uint8_t buf[kL2capMps];
+            for (uint16_t off = 0; off < total; ) {
+                const uint16_t n = static_cast<uint16_t>((total - off < kL2capMps) ? (total - off) : kL2capMps);
+                if (os_mbuf_copydata(sdu, off, n, buf) == 0 && s_on_stream) {
+                    s_on_stream(AGENT_STREAM_VOICE, buf, n);
+                }
+                off += n;
             }
-            off += n;
         }
-        os_mbuf_free_chain(sdu);            // NimBLE does not auto-free; must free explicitly
+        os_mbuf_free_chain(sdu);
         RearmL2capRx(event->receive.chan);  // replenish the rx buffer to keep receiving
         return 0;
     }
     case BLE_L2CAP_EVENT_COC_TX_UNSTALLED:
-        s_l2cap_stalled.store(false, std::memory_order_release);  // tx credits restored -> the recording worker may send again
+        if (is_img) s_img_stalled.store(false, std::memory_order_release);   // tx credits restored
+        else        s_l2cap_stalled.store(false, std::memory_order_release); // recording worker may send again
         return 0;
     default:
         return 0;
@@ -437,14 +479,21 @@ int L2capEvent(struct ble_l2cap_event* event, void* /*arg*/) {
 }
 
 esp_err_t StartL2capServer() {
-    int rc = ble_l2cap_create_server(kL2capPsm, kL2capMtu, L2capEvent, nullptr);
-    if (rc != 0) { ESP_LOGE(TAG, "l2cap_create_server rc=%d", rc); return ESP_FAIL; }
-    ESP_LOGI(TAG, "L2CAP CoC server on PSM 0x%04X (MTU=%d MPS=%d) — App must explicitly open this PSM after connecting",
+    // Audio channel (PSM 0x0081): downlink TTS + uplink ASR/recording
+    int rc = ble_l2cap_create_server(kL2capPsm, kL2capMtu, L2capEvent,
+                                     reinterpret_cast<void*>(static_cast<uintptr_t>(kL2capPsm)));
+    if (rc != 0) { ESP_LOGE(TAG, "l2cap_create_server(audio) rc=%d", rc); return ESP_FAIL; }
+    ESP_LOGI(TAG, "L2CAP CoC server on PSM 0x%04X (MTU=%d MPS=%d) — App opens this for audio (TTS/ASR)",
              kL2capPsm, kL2capMtu, kL2capMps);
+    // Image channel (PSM 0x0082): uplink still-image snapshots, independent of audio.
+    rc = ble_l2cap_create_server(kImgPsm, kL2capMtu, L2capEvent,
+                                 reinterpret_cast<void*>(static_cast<uintptr_t>(kImgPsm)));
+    if (rc != 0) { ESP_LOGE(TAG, "l2cap_create_server(image) rc=%d", rc); return ESP_FAIL; }
+    ESP_LOGI(TAG, "L2CAP CoC server on PSM 0x%04X — App opens this for image snapshots", kImgPsm);
     return ESP_OK;
 }
 
-// ── ASR / recording uplink implementation ──
+// ASR / recording uplink implementation
 // 0x52 StreamStart: payload = transfer_id(4, LE) + filename(N). Notify on 0xFFC4 (DEVICE_EVENT).
 bool RecSendStreamStart(uint32_t tid, const char* name, size_t name_len) {
     std::vector<uint8_t> f;
@@ -613,6 +662,163 @@ esp_err_t RecordingEnd(bool complete, const uint8_t* final_header, size_t hdr_le
     return ESP_OK;
 }
 
+// Image snapshot uplink implementation
+// Mirrors the recording path; reuses kRecMaxSdu / kRecStallWaitMs / kRecStartDelayMs (generic L2CAP params).
+// 0x54 ImageStart: payload(13) = transfer_id(4) + format(1) + width(2) + height(2) + total_len(4). Notify 0xFFC4.
+bool ImgSendStreamStart(uint32_t tid, uint8_t fmt, uint16_t w, uint16_t h, uint32_t total) {
+    uint8_t f[6 + 13];
+    size_t i = 0;
+    f[i++] = 0x01; f[i++] = 0x03; f[i++] = 0x54; f[i++] = 0x00;   // ver, Event, 0x54, seq
+    f[i++] = 13; f[i++] = 0x00;                                    // payload_len = 13 (LE)
+    f[i++] = tid & 0xFF; f[i++] = (tid >> 8) & 0xFF; f[i++] = (tid >> 16) & 0xFF; f[i++] = (tid >> 24) & 0xFF;
+    f[i++] = fmt;
+    f[i++] = w & 0xFF; f[i++] = (w >> 8) & 0xFF;
+    f[i++] = h & 0xFF; f[i++] = (h >> 8) & 0xFF;
+    f[i++] = total & 0xFF; f[i++] = (total >> 8) & 0xFF; f[i++] = (total >> 16) & 0xFF; f[i++] = (total >> 24) & 0xFF;
+    // Best-effort retry (like 0x52): losing 0x54 means the App never opens the session and drops the image bytes.
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        if (Notify(s_h_evt, f, i) == ESP_OK) return true;
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    return false;
+}
+
+// 0x55 ImageEnd: payload(9) = transfer_id(4) + status(1) + valid_bytes(4). Notify 0xFFC4.
+bool ImgSendStreamEnd(uint32_t tid, uint8_t status, uint32_t valid_bytes) {
+    uint8_t f[6 + 9];
+    size_t i = 0;
+    f[i++] = 0x01; f[i++] = 0x03; f[i++] = 0x55; f[i++] = 0x00;
+    f[i++] = 9; f[i++] = 0x00;                                     // payload_len = 9 (LE)
+    f[i++] = tid & 0xFF; f[i++] = (tid >> 8) & 0xFF; f[i++] = (tid >> 16) & 0xFF; f[i++] = (tid >> 24) & 0xFF;
+    f[i++] = status;
+    f[i++] = valid_bytes & 0xFF; f[i++] = (valid_bytes >> 8) & 0xFF; f[i++] = (valid_bytes >> 16) & 0xFF; f[i++] = (valid_bytes >> 24) & 0xFF;
+    return Notify(s_h_evt, f, i) == ESP_OK;
+}
+
+// Send one SDU (<= kRecMaxSdu) over the image L2CAP CoC. Returns 0 = sent, 1 = sent but now stalled, -1 = error.
+int ImgL2capSend(const uint8_t* data, size_t len) {
+    if (!s_img_connected || !s_img_chan) return -1;
+    struct os_mbuf* sdu = os_msys_get_pkthdr(len, 0);
+    if (!sdu) return -1;
+    if (os_mbuf_append(sdu, data, len) != 0) { os_mbuf_free_chain(sdu); return -1; }
+    int rc = ble_l2cap_send(s_img_chan, sdu);
+    if (rc == 0) return 0;
+    if (rc == BLE_HS_ESTALLED) { s_img_stalled.store(true, std::memory_order_release); return 1; }
+    return -1;
+}
+
+// Worker: drain the image queue to L2CAP in <=MPS SDUs (credit backpressure), then emit 0x55. One image at a time.
+void ImageTask(void*) {
+    ESP_LOGI(TAG, "image worker started (transfer_id=%u)", static_cast<unsigned>(s_img.transfer_id));
+    // Head start for 0x54 ImageStart (same race as ASR 0x52): let the App register the session before bytes arrive.
+    vTaskDelay(pdMS_TO_TICKS(kRecStartDelayMs));
+    while (true) {
+        if (!s_connected) { s_img.truncated.store(true, std::memory_order_release); break; }
+        const bool end_req = s_img.end_req.load(std::memory_order_acquire);
+        std::vector<uint8_t> chunk;
+        {
+            std::lock_guard<std::mutex> lk(s_img.mtx);
+            if (!s_img.q.empty()) {
+                chunk = std::move(s_img.q.front());
+                s_img.q.pop();
+                s_img.queued_bytes.fetch_sub(chunk.size(), std::memory_order_release);
+            }
+        }
+        if (chunk.empty()) {
+            if (end_req) break;                     // drained + end requested -> done
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
+        bool abort = false;
+        for (size_t off = 0; off < chunk.size() && !abort; ) {
+            uint32_t waited = 0;                     // credit backpressure: wait while the tx is stalled
+            while (s_img_stalled.load(std::memory_order_acquire)) {
+                if (!s_connected || !s_img_connected) { abort = true; break; }
+                vTaskDelay(pdMS_TO_TICKS(5));
+                if ((waited += 5) >= kRecStallWaitMs) { abort = true; break; }  // stuck too long -> truncate
+            }
+            if (abort) break;
+            const size_t n = (chunk.size() - off < kRecMaxSdu) ? (chunk.size() - off) : kRecMaxSdu;
+            int r = ImgL2capSend(chunk.data() + off, n);
+            if (r >= 0) {                            // 0 = sent, 1 = sent then stalled: bytes are on their way
+                s_img.sent_bytes.fetch_add(static_cast<uint32_t>(n), std::memory_order_release);
+                off += n;
+                if (r == 0) vTaskDelay(pdMS_TO_TICKS(1));   // tiny yield to the host between SDUs
+            } else {                                 // pool empty / transient: brief backoff, then retry
+                if (!s_connected || !s_img_connected) { abort = true; break; }
+                vTaskDelay(pdMS_TO_TICKS(10));
+            }
+        }
+        if (abort) { s_img.truncated.store(true, std::memory_order_release); break; }
+    }
+    const bool ok = !s_img.truncated.load(std::memory_order_acquire) && s_img.complete.load(std::memory_order_acquire);
+    const uint8_t status = ok ? 0x00 : 0x01;
+    ImgSendStreamEnd(s_img.transfer_id, status, s_img.sent_bytes.load(std::memory_order_acquire));
+    ESP_LOGI(TAG, "image stream %u ended (status=%u valid_bytes=%u)",
+             static_cast<unsigned>(s_img.transfer_id), status,
+             static_cast<unsigned>(s_img.sent_bytes.load(std::memory_order_acquire)));
+    s_img.active.store(false, std::memory_order_release);
+    s_img.task = nullptr;
+    vTaskDelete(nullptr);
+}
+
+esp_err_t ImageStart(uint8_t fmt, uint16_t w, uint16_t h, uint32_t total) {
+    if (s_img.active.load(std::memory_order_acquire)) return ESP_ERR_INVALID_STATE;  // one image at a time
+    if (!s_connected) return ESP_ERR_INVALID_STATE;
+    if (!s_img_connected) {  // the App must have opened the image L2CAP CoC before we can push
+        ESP_LOGW(TAG, "image: L2CAP CoC not open — App must connect PSM 0x%04X first", kImgPsm);
+        return ESP_ERR_INVALID_STATE;
+    }
+    {
+        std::lock_guard<std::mutex> lk(s_img.mtx);
+        std::queue<std::vector<uint8_t>> empty;
+        std::swap(s_img.q, empty);
+    }
+    s_img.queued_bytes.store(0, std::memory_order_release);
+    s_img.sent_bytes.store(0, std::memory_order_release);
+    s_img.end_req.store(false, std::memory_order_release);
+    s_img.truncated.store(false, std::memory_order_release);
+    s_img.complete.store(true, std::memory_order_release);
+    s_img.format = fmt; s_img.width = w; s_img.height = h; s_img.total_len = total;
+    s_img.transfer_id = ++s_img_counter;
+    if (!ImgSendStreamStart(s_img.transfer_id, fmt, w, h, total)) {
+        ESP_LOGE(TAG, "image: 0x54 ImageStart notify failed");
+        return ESP_FAIL;
+    }
+    s_img.active.store(true, std::memory_order_release);
+    if (xTaskCreate(ImageTask, "agentlink_img", 6144, nullptr, 5, &s_img.task) != pdPASS) {
+        s_img.active.store(false, std::memory_order_release);
+        ESP_LOGE(TAG, "image: task create failed");
+        return ESP_ERR_NO_MEM;
+    }
+    return ESP_OK;
+}
+
+esp_err_t ImageEnqueue(const uint8_t* data, size_t len) {
+    if (!s_img.active.load(std::memory_order_acquire)) return ESP_ERR_INVALID_STATE;
+    if (!data || len == 0) return ESP_ERR_INVALID_ARG;
+    // Once truncated, refuse new bytes: L2CAP is an ordered byte run, so we must not resume after a gap.
+    if (s_img.truncated.load(std::memory_order_acquire)) return ESP_ERR_NO_MEM;
+    std::lock_guard<std::mutex> lk(s_img.mtx);
+    if (s_img.queued_bytes.load(std::memory_order_acquire) + len > kImgQueueHardCap) {
+        s_img.truncated.store(true, std::memory_order_release);
+        s_img.end_req.store(true, std::memory_order_release);
+        ESP_LOGW(TAG, "image queue cap (%uKB) — truncating stream %u",
+                 static_cast<unsigned>(kImgQueueHardCap / 1024), static_cast<unsigned>(s_img.transfer_id));
+        return ESP_ERR_NO_MEM;
+    }
+    s_img.q.emplace(data, data + len);
+    s_img.queued_bytes.fetch_add(len, std::memory_order_release);
+    return ESP_OK;
+}
+
+esp_err_t ImageEnd(bool complete) {
+    if (!s_img.active.load(std::memory_order_acquire)) return ESP_OK;
+    s_img.complete.store(complete, std::memory_order_release);
+    s_img.end_req.store(true, std::memory_order_release);  // worker drains, emits 0x55, exits
+    return ESP_OK;
+}
+
 // GAP events: connect / disconnect / advertising complete.
 int GapEvent(struct ble_gap_event* event, void* /*arg*/) {
     switch (event->type) {
@@ -770,16 +976,28 @@ esp_err_t ble_stream_start(void* /*impl*/, agent_stream_t type, const uint8_t* m
     if (type == AGENT_STREAM_VOICE) return VoiceStart();
     if (type == AGENT_STREAM_RECORDING)                          // ASR / record-stream: 0x52 + L2CAP uplink
         return RecordingStart(reinterpret_cast<const char*>(meta), meta_len);
+    if (type == AGENT_STREAM_IMAGE) {                            // image snapshot: 0x54 + L2CAP uplink (PSM 0x0082)
+        // meta = [format(1)][width(2,LE)][height(2,LE)][total_len(4,LE)] (packed by agent_link_send_image).
+        if (!meta || meta_len < 9) return ESP_ERR_INVALID_ARG;
+        const uint8_t  fmt = meta[0];
+        const uint16_t w   = static_cast<uint16_t>(meta[1] | (meta[2] << 8));
+        const uint16_t h   = static_cast<uint16_t>(meta[3] | (meta[4] << 8));
+        const uint32_t total = static_cast<uint32_t>(meta[5]) | (static_cast<uint32_t>(meta[6]) << 8) |
+                               (static_cast<uint32_t>(meta[7]) << 16) | (static_cast<uint32_t>(meta[8]) << 24);
+        return ImageStart(fmt, w, h, total);
+    }
     return ESP_ERR_NOT_SUPPORTED;  // AGENT_STREAM_FILE (L2CAP), VIDEO (WiFi) later
 }
 esp_err_t ble_send_stream(void* /*impl*/, agent_stream_t type, const uint8_t* data, size_t len) {
     if (type == AGENT_STREAM_VOICE) return VoiceEnqueue(data, len);
     if (type == AGENT_STREAM_RECORDING) return RecordingEnqueue(data, len);
+    if (type == AGENT_STREAM_IMAGE) return ImageEnqueue(data, len);
     return ESP_ERR_NOT_SUPPORTED;
 }
 esp_err_t ble_stream_end(void* /*impl*/, agent_stream_t type, bool complete, const uint8_t* meta, size_t meta_len) {
     if (type == AGENT_STREAM_VOICE) return VoiceEnd();
     if (type == AGENT_STREAM_RECORDING) return RecordingEnd(complete, meta, meta_len);  // 0x53 (meta = final_header)
+    if (type == AGENT_STREAM_IMAGE) return ImageEnd(complete);                          // 0x55
     return ESP_ERR_NOT_SUPPORTED;
 }
 bool ble_is_ready(void* /*impl*/) { return s_connected; }

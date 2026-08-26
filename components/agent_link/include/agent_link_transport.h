@@ -28,8 +28,9 @@ extern "C" {
 typedef enum {
     AGENT_STREAM_VOICE = 0,    ///< Voice (microphone uplink / TTS downlink)
     AGENT_STREAM_VIDEO,        ///< Video (camera uplink / remote downlink) — WiFi only
-    AGENT_STREAM_RECORDING,    ///< Recording file upload
+    AGENT_STREAM_RECORDING,    ///< Recording file upload / real-time ASR audio (BLE L2CAP PSM 0x0081)
     AGENT_STREAM_FILE,         ///< File transfer / OTA
+    AGENT_STREAM_IMAGE,        ///< Still-image snapshot (device → App); BLE L2CAP PSM 0x0082, events 0x54/0x55
 } agent_stream_t;
 
 /**

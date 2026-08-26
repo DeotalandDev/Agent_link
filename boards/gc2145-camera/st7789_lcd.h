@@ -73,7 +73,7 @@ private:
     esp_lcd_panel_io_handle_t io_         = nullptr;
     esp_lcd_panel_handle_t    panel_      = nullptr;
     void*                     tx_sem_     = nullptr;   // SemaphoreHandle_t
-    uint8_t*                  stripe_     = nullptr;   // internal DMA SRAM for FillSolid
-    size_t                    stripe_cap_ = 0;
+    uint8_t*                  stripe_[2]  = {nullptr, nullptr};  // ping-pong internal DMA SRAM (see DrawBitmap)
+    size_t                    stripe_cap_ = 0;         // capacity of EACH stripe buffer
     std::atomic<uint32_t>     done_count_{0};          // ISR increments; the task waits for it to catch up
 };

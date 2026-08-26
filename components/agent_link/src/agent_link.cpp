@@ -735,6 +735,34 @@ esp_err_t agent_link_asr_end(bool complete) {
     if (s_tx && s_tx->stream_end) return s_tx->stream_end(s_tx->impl, AGENT_STREAM_RECORDING, complete, nullptr, 0);
     return ESP_OK;
 }
+
+// Data plane: still-image snapshot uplink
+// One-shot transparent pipe: pack the 0x54 metadata, open the image stream, queue the bytes, close it.
+// The transport owns transfer_id + 0x54/0x55 framing + L2CAP chunking/backpressure and streams async.
+esp_err_t agent_link_send_image(const uint8_t* data, size_t bytes,
+                                agent_image_format_t fmt, uint16_t w, uint16_t h) {
+    if (!data || bytes == 0) return ESP_ERR_INVALID_ARG;
+    if (!s_tx || !s_tx->stream_start || !s_tx->send_stream || !s_tx->stream_end) return ESP_ERR_INVALID_STATE;
+    if (!(s_tx->is_ready && s_tx->is_ready(s_tx->impl))) return not_ready("send_image");
+
+    // 0x54 metadata: [format(1)][width(2,LE)][height(2,LE)][total_len(4,LE)]. 
+    // Sent before any image byte so the App learns the format/size and how many bytes to expect on the L2CAP channel.
+    const uint32_t total = static_cast<uint32_t>(bytes);
+    const uint8_t meta[9] = {
+        static_cast<uint8_t>(fmt),
+        static_cast<uint8_t>(w & 0xFF), static_cast<uint8_t>((w >> 8) & 0xFF),
+        static_cast<uint8_t>(h & 0xFF), static_cast<uint8_t>((h >> 8) & 0xFF),
+        static_cast<uint8_t>(total & 0xFF), static_cast<uint8_t>((total >> 8) & 0xFF),
+        static_cast<uint8_t>((total >> 16) & 0xFF), static_cast<uint8_t>((total >> 24) & 0xFF),
+    };
+    esp_err_t r = s_tx->stream_start(s_tx->impl, AGENT_STREAM_IMAGE, meta, sizeof(meta));
+    if (r != ESP_OK) return r;
+    r = s_tx->send_stream(s_tx->impl, AGENT_STREAM_IMAGE, data, bytes);
+    // Always close so the worker emits 0x55; `complete` reflects whether all bytes were queued.
+    esp_err_t e = s_tx->stream_end(s_tx->impl, AGENT_STREAM_IMAGE, r == ESP_OK, nullptr, 0);
+    return (r != ESP_OK) ? r : e;
+}
+
 // ── Data plane: video (WiFi only; see transport_wifi.cpp)
 esp_err_t agent_link_push_video(const uint8_t* frame, size_t bytes, uint32_t pts_ms, bool keyframe) {
     (void)frame; (void)bytes; (void)pts_ms; (void)keyframe; return not_ready("push_video");

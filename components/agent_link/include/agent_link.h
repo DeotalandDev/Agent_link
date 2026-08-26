@@ -243,6 +243,32 @@ esp_err_t agent_link_asr_push(const uint8_t* audio, size_t bytes);
  */
 esp_err_t agent_link_asr_end(bool complete);
 
+/** @brief Wire format of the bytes handed to agent_link_send_image(). */
+typedef enum {
+    AGENT_IMG_JPEG      = 0,  ///< JPEG-encoded (recommended over BLE; ~10-30KB per 240x240 frame)
+    AGENT_IMG_RGB565_BE = 1,  ///< Raw big-endian RGB565, width*height*2 bytes (large; BLE-slow)
+} agent_image_format_t;
+
+/**
+ * @brief Send a single still image (snapshot) to the App.
+ *
+ * A transparent, fire-and-forget one-shot: the SDK owns the transfer_id, the 0x54/0x55 framing,
+ * and L2CAP chunking + backpressure; it does NOT encode — feed it whatever bytes the App expects
+ * (encode to JPEG on the board, e.g. via esp_jpeg, before calling). The call returns as soon as the
+ * image is queued; a background worker streams it and emits 0x55 StreamEnd when done.
+ *
+ * @param data  Image bytes (JPEG or raw RGB565 per @p fmt).
+ * @param bytes Size of @p data in bytes.
+ * @param fmt   Pixel/encoding format carried in the 0x54 event so the App can decode.
+ * @param w     Image width in pixels (carried in 0x54; 0 if unknown).
+ * @param h     Image height in pixels (carried in 0x54; 0 if unknown).
+ * @return ESP_OK once queued; ESP_ERR_INVALID_STATE if the link / L2CAP image channel is not ready;
+ *         ESP_ERR_INVALID_ARG on empty input.
+ * @note BLE transport only.One image at a time, but independent of (concurrent with) the ASR audio stream.
+ */
+esp_err_t agent_link_send_image(const uint8_t* data, size_t bytes,
+                                agent_image_format_t fmt, uint16_t w, uint16_t h);
+
 /**
  * @brief Push a device→Agent event
  *
