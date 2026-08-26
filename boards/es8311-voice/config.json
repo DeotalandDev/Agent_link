@@ -6,6 +6,7 @@
         {
             "name": "es8311-voice",
             "sdkconfig_append": [
+                "CONFIG_BOARD_TYPE_ESP32S3_ES8311_VOICE=y",
                 "CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y"
             ]
         }

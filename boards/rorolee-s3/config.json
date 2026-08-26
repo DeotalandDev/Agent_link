@@ -6,6 +6,7 @@
         {
             "name": "rorolee-s3",
             "sdkconfig_append": [
+                "CONFIG_BOARD_TYPE_ROROLEE_S3=y",
                 "CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y",
                 "CONFIG_SPIRAM=y",
                 "CONFIG_RTC_CLK_SRC_EXT_CRYS=y",

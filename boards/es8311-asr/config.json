@@ -6,6 +6,7 @@
         {
             "name": "es8311-asr",
             "sdkconfig_append": [
+                "CONFIG_BOARD_TYPE_ESP32S3_ES8311_ASR=y",
                 "CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y"
             ]
         }

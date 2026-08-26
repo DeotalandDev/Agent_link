@@ -12,6 +12,7 @@ void on_audio_out(const uint8_t* pcm16, size_t bytes, void*) { Board::GetInstanc
 void on_audio_end(void*) { Board::GetInstance().AudioEnd(); }
 void on_show_text(const char* utf8, void*) { Board::GetInstance().ShowText(utf8); }
 void on_haptic(uint32_t duration_ms, void*) { Board::GetInstance().Vibrate(duration_ms); }
+void on_led(uint32_t rgb, void*) { Board::GetInstance().SetLed(rgb); }
 
 void on_state(agent_state_t state, void*) {
     ESP_LOGI(TAG, "[state] %s",
@@ -30,6 +31,7 @@ extern "C" void app_main(void) {
     out.on_audio_end = on_audio_end;
     out.on_show_text = on_show_text;
     out.on_haptic    = on_haptic;
+    out.on_led       = on_led;
 
     agent_link_config_t cfg = {};
     cfg.device_name = board.Name();

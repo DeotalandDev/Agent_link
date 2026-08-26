@@ -22,6 +22,7 @@ public:
     virtual void AudioEnd() {}
     virtual void ShowText(const char* utf8) { (void)utf8; }
     virtual void Vibrate(uint32_t duration_ms) { (void)duration_ms; }
+    virtual void SetLed(uint32_t rgb) { (void)rgb; }   // RGB 0x00RRGGBB; the SDK's led0 endpoint routes here
 
     // Device → Agent: Status Query & Reporting
     virtual int GetBatteryLevel() { return -1; }

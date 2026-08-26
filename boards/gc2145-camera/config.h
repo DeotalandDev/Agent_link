@@ -28,6 +28,9 @@
 // Snapshot trigger button — idles low (internal pull-down), driven high when pressed
 #define CAPTURE_BUTTON_PIN      GPIO_NUM_3
 
+// Onboard WS2812 (NeoPixel) RGB LED on GPIO48, driven over RMT. Exposed to the App as the "led0" endpoint.
+#define WS2812_LED_PIN          GPIO_NUM_48
+
 #define CAMERA_MASK_TOP_ROWS 8
 
 // set this to 1 to byte-swap each pixel before drawing

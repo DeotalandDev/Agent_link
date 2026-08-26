@@ -40,7 +40,7 @@ if(CONFIG_BOARD_TYPE_ESP32P4_WAVESHARE)
     list(APPEND EXTRA_REQUIRES esp_lcd_co5300)
 endif()
 if(CONFIG_BOARD_TYPE_ESP32S3_GC2145_CAMERA)
-    list(APPEND EXTRA_REQUIRES esp32_camera)
+    list(APPEND EXTRA_REQUIRES esp32_camera esp_driver_rmt)
 endif()
 
 idf_component_register(

@@ -7,6 +7,7 @@
 #include "board.h"
 #include "config.h"
 #include "st7789_lcd.h"
+#include "ws2812_led.h"
 
 #include "esp_camera.h"
 #include "img_converters.h"
@@ -25,10 +26,16 @@
 class Gc2145CameraBoard : public Board {
 public:
     Gc2145CameraBoard() {
+        InitLed();                 // independent of the camera; also doubles as a bring-up/fault indicator
         if (lcd_.Init(MakeLcdConfig()) != ESP_OK) { ESP_LOGE(TAG, "LCD init failed"); return; }
         lcd_ok_ = true;
-        if (InitCamera() != ESP_OK) { ESP_LOGE(TAG, "camera init failed"); lcd_.FillSolid(rgb565::kRed); return; }
+        if (InitCamera() != ESP_OK) {
+            ESP_LOGE(TAG, "camera init failed"); lcd_.FillSolid(rgb565::kRed);
+            (void)led_.SetColor(16, 0, 0);   // dim red = camera fault
+            return;
+        }
         cam_ok_ = true;
+        (void)led_.SetColor(0, 16, 0);       // dim green = camera up
         InitButton();              // BOOT key -> snapshot
         RegisterCaptureEndpoint(); // App/LLM -> snapshot (MCP actuator "camera0")
         xTaskCreate(&Gc2145CameraBoard::PreviewTaskEntry, "cam_preview", 4096, this, 5, &preview_task_);
@@ -36,8 +43,11 @@ public:
 
     const char* Name() const override { return "GC2145_CAMERA"; }
 
-    // Hardware present: a camera and a screen
-    uint32_t Capabilities() const override { return AGENT_CAP_CAMERA | AGENT_CAP_SCREEN; }
+    // Hardware present: a camera, a screen, and the onboard WS2812 RGB LED
+    uint32_t Capabilities() const override { return AGENT_CAP_CAMERA | AGENT_CAP_SCREEN | AGENT_CAP_LED; }
+
+    // Agent -> Device: the SDK's synthetic "led0" endpoint routes here (0x00RRGGBB) -> drive the WS2812.
+    void SetLed(uint32_t rgb) override { (void)led_.SetRgb(rgb); }
 
 private:
     static St7789LcdConfig MakeLcdConfig() {
@@ -133,6 +143,13 @@ private:
         if (self) { self->capture_req_.store(true, std::memory_order_release); ESP_LOGI(TAG, "snapshot requested (App)"); }
     }
 
+    // Bring up the onboard WS2812 RGB LED (RMT). Safe if it fails — SetLed() just no-ops then.
+    void InitLed() {
+        if (led_.Init(WS2812_LED_PIN) != ESP_OK) { ESP_LOGE(TAG, "WS2812 init failed"); return; }
+        (void)led_.Off();
+        ESP_LOGI(TAG, "WS2812 LED ready on GPIO%d (App endpoint: led0)", (int)WS2812_LED_PIN);
+    }
+
     // Snapshot button, polled in the preview loop with edge detection. This button is ACTIVE-HIGH
     void InitButton() {
         gpio_config_t c = {};
@@ -205,6 +222,7 @@ private:
     }
 
     St7789Lcd         lcd_;
+    Ws2812Led         led_;
     bool              lcd_ok_       = false;
     bool              cam_ok_       = false;
     TaskHandle_t      preview_task_ = nullptr;

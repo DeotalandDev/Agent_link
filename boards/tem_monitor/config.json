@@ -6,6 +6,7 @@
         {
             "name": "tem-monitor",
             "sdkconfig_append": [
+                "CONFIG_BOARD_TYPE_ESP32S3_TEM_MONITOR=y",
                 "CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y",
                 "CONFIG_SPIRAM=y",
                 "CONFIG_RTC_CLK_SRC_EXT_CRYS=y",
