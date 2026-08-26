@@ -9,11 +9,11 @@ Copy `boards/rorolee-s3/` as a starting point:
 ```
 boards/rorolee-s3/
 ├── config.h        pins and feature macros (GPIO_NUM_*, resolution, I2C addresses)
-├── config.json     target chip + this board's sdkconfig fragment
+├── config.json     manufacturer/type/target metadata (which chip -> which `idf.py set-target`)
 └── rorolee_s3.cc   the board class: subclass Board, implement capabilities, end with DECLARE_BOARD(...)
 ```
 
-`config.json` carries `manufacturer`, `type`, `target` (the chip, e.g. `esp32s3`), and a `builds[]` list; each build has a `name` and an `sdkconfig_append` array applied on top of the project defaults (flash size, PSRAM, clock source, and so on).
+`config.json` carries `manufacturer`, `type`, and `target` (the chip, e.g. `esp32s3`) — informational metadata; it tells you which `idf.py set-target` to run and isn't parsed by the build. Actual sdkconfig requirements go in two places (see "Adding a board" below): target-wide settings (flash size, PSRAM) in `sdkconfig.defaults.<target>`, board-specific settings (clock source, and so on) as `select` on that board's entry in [`../main/Kconfig.projbuild`](../main/Kconfig.projbuild).
 
 ## The Board interface
 
@@ -57,12 +57,13 @@ Say `my-board` on an ESP32-C6:
 
 1. Copy a directory: `cp -r boards/rorolee-s3 boards/my-board`.
 2. Edit `config.h` with your pins.
-3. Edit `config.json`: set `"target": "esp32c6"` and replace `sdkconfig_append` with what your board needs.
+3. Edit `config.json`: set `"target": "esp32c6"` (metadata only, for humans deciding `idf.py set-target`).
 4. Edit the `.cc`: rename the class, set `Name()` and `Capabilities()`, implement your methods, and end with `DECLARE_BOARD(MyBoard);`.
 5. Register it in two places:
-   - add `config BOARD_TYPE_MY_BOARD` to the `choice BOARD_TYPE` in [`../main/Kconfig.projbuild`](../main/Kconfig.projbuild);
+   - add `config BOARD_TYPE_MY_BOARD` to the `choice BOARD_TYPE` in [`../main/Kconfig.projbuild`](../main/Kconfig.projbuild). If the board needs sdkconfig settings beyond the target-wide defaults (an external 32kHz crystal, a non-default PSRAM mode, a different console, ...), add them as `select SOME_SYMBOL` lines directly under that `config` entry — `select` is re-applied by ESP-IDF every time you reconfigure, so it stays correct even after switching `Board Type` in menuconfig without touching `sdkconfig` by hand;
    - add `elseif(CONFIG_BOARD_TYPE_MY_BOARD) set(BOARD_DIR "my-board")` to the board-select chain in [`../main/CMakeLists.txt`](../main/CMakeLists.txt).
    - If you use peripherals beyond what is already required, add their driver components (`esp_driver_i2c`, `esp_lcd`, `esp_codec_dev`) to `REQUIRES` in that same `CMakeLists.txt`.
+   - If the board is on a chip target that isn't built yet (a new `esp32c6`, say), add a `sdkconfig.defaults.<target>` at the repo root for whatever every board on that chip needs (flash size, PSRAM, ...) — ESP-IDF merges it automatically on `idf.py set-target <target>`, the same way [`../sdkconfig.defaults.esp32p4`](../sdkconfig.defaults.esp32p4) already does for the P4 board.
 
 Then build:
 
@@ -80,9 +81,13 @@ The Board Type menu currently offers:
 
 | Directory           | Target   | Notes                                                                                                                     |
 | ------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `rorolee-s3/`       | ESP32-S3 | Reference board: SH8501 AMOLED, ES8311/ES7210 codec, push-to-talk mic, BQ27220 fuel gauge                                 |
+| `rorolee-s3/`       | ESP32-S3 | Reference board: SH8501 AMOLED, ES8311/ES7210 codec, push-to-talk mic, BQ27220 fuel gauge, external 32kHz crystal        |
+| `rorolee-basic/`    | ESP32-S3 | Like `rorolee-s3` plus SD card and buttons; external 32kHz crystal                                                        |
+| `tem_monitor/`      | ESP32-S3 | Sensor board: SPA06 pressure/temperature and SHT30 temperature/humidity over I2C; a worked example of the device-I/O path; external 32kHz crystal |
+| `es8311-voice/`     | ESP32-S3 | Minimal example: one ES8311 codec doing full-duplex speaker + mic                                                         |
+| `es8311-asr/`       | ESP32-S3 | Minimal example: one ES8311 codec, mic-only, streams PCM to the App for live ASR                                         |
+| `gc2145-camera/`    | ESP32-S3 | GC2145 DVP camera live preview on an ST7789 240x240 LCD; needs Octal PSRAM @ 80MHz (`select`-ed automatically for this board) |
 | `esp32p4Waveshare/` | ESP32-P4 | Waveshare board with a CO5300 466x466 AMOLED                                                                              |
-| `tem_monitor/`      | ESP32-S3 | Sensor board: SPA06 pressure/temperature and SHT30 temperature/humidity over I2C; a worked example of the device-I/O path |
 
 Drivers used by more than one board live in [`common/`](common/)
 

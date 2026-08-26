@@ -1,18 +1,5 @@
 {
     "manufacturer": "deotaland",
     "type": "gc2145-camera",
-    "target": "esp32s3",
-    "builds": [
-        {
-            "name": "gc2145-camera",
-            "sdkconfig_append": [
-                "CONFIG_BOARD_TYPE_ESP32S3_GC2145_CAMERA=y",
-                "CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y",
-                "CONFIG_SPIRAM=y",
-                "CONFIG_SPIRAM_MODE_OCT=y",
-                "CONFIG_SPIRAM_SPEED_80M=y",
-                "CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y"
-            ]
-        }
-    ]
+    "target": "esp32s3"
 }
