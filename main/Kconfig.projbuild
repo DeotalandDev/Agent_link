@@ -8,27 +8,19 @@ choice BOARD_TYPE
         Adding a new board:  see boards/README.md
     config BOARD_TYPE_ROROLEE_S3
         bool "RoRoLee-S3 (ESP32-S3)"
-        select RTC_CLK_SRC_EXT_CRYS
-        select BTDM_CTRL_LPCLK_SEL_EXT_32K_XTAL
 
     config BOARD_TYPE_ESP32P4_WAVESHARE
         bool "ESP32-P4 Waveshare (CO5300 466x466 AMOLED)"
     config BOARD_TYPE_ESP32S3_TEM_MONITOR
         bool "ESP32-S3 TemMonitor (Pressure_Temp_Humidity_Monitor)"
-        select RTC_CLK_SRC_EXT_CRYS
-        select BTDM_CTRL_LPCLK_SEL_EXT_32K_XTAL
     config BOARD_TYPE_ESP32S3_ES8311_VOICE
         bool "ESP32-S3 ES8311 Voice (single-codec audio example)"
     config BOARD_TYPE_ESP32S3_ES8311_ASR
         bool "ESP32-S3 ES8311 ASR (minimal real-time ASR example)"
     config BOARD_TYPE_ESP32S3_GC2145_CAMERA
         bool "ESP32-S3 GC2145 Camera (DVP camera preview on ST7789 LCD)"
-        select SPIRAM_MODE_OCT
-        select SPIRAM_SPEED_80M
     config BOARD_TYPE_ESP32S3_ROROLEE_BASIC
         bool "ESP32-S3 RoRoLee Basic (rorolee-basic board with ES8311 audio, SH8501 display, SD card, and buttons)"
-        select RTC_CLK_SRC_EXT_CRYS
-        select BTDM_CTRL_LPCLK_SEL_EXT_32K_XTAL
 endchoice
 
 choice AGENT_LINK_TRANSPORT
