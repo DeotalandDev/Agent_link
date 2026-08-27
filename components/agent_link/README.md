@@ -61,7 +61,7 @@ Leave the callbacks you do not support as `NULL`, and do not set their capabilit
 ## API at a glance
 
 - Lifecycle: `agent_link_init`, `agent_link_start`, `agent_link_stop`, `agent_link_state`.
-- Uplink: `agent_link_push_voice` / `agent_link_voice_end`, `agent_link_asr_start` / `agent_link_asr_push` / `agent_link_asr_end` (real-time ASR audio → App, BLE L2CAP), `agent_link_push_event` (device→App events; `AGENT_EVT_CUSTOM` for board-private packets), `agent_link_report_battery`, `agent_link_register_io` / `agent_link_push_reading`. Also declared but not yet wired: `agent_link_report_selected_agent`, `agent_link_push_video`.
+- Uplink: `agent_link_push_voice` / `agent_link_voice_end`, `agent_link_asr_start` / `agent_link_asr_push` / `agent_link_asr_end` (real-time ASR audio → App, BLE L2CAP), `agent_link_push_event` (device→App events; `AGENT_EVT_CUSTOM` for board-private packets), `agent_link_push_prompt` (firmware-authored text → App forwards verbatim to the Agent as a prompt, event `0x04`) `agent_link_report_battery`, `agent_link_register_io` / `agent_link_push_reading`. Also declared but not yet wired: `agent_link_report_selected_agent`, `agent_link_push_video`.
 - Downlink: the `agent_output_cb_t` callbacks, invoked from the transport context. Keep them short and non-blocking; queue work and return.
 
 Requires ESP-IDF v5.0 or newer. Private dependencies: `log`, `bt`, `nvs_flash`, `freertos`.

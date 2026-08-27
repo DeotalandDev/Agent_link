@@ -46,6 +46,8 @@ typedef enum {
     AGENT_EVT_BUTTON   = 1,    ///< Button: data suggested as {uint8 button_id, uint8 action}
     AGENT_EVT_SENSOR   = 2,    ///< Sensor reading: data is device-specific (JSON or TLV recommended)
     AGENT_EVT_WAKEWORD = 3,    ///< Wake word detected: data may include the matched word
+    AGENT_EVT_PROMPT   = 4,    ///< Firmware-authored UTF-8 text; App forwards it verbatim to the Agent
+                               ///< as a prompt. Single frame, not chunked — use agent_link_push_prompt().
     AGENT_EVT_CUSTOM   = 100,  ///< Device-private events (user-defined, 0x64+)
 } agent_event_t;
 

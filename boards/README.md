@@ -82,7 +82,7 @@ The Board Type menu currently offers:
 | Directory           | Target   | Notes                                                                                                                                             |
 | ------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `rorolee-s3/`       | ESP32-S3 | Reference board: SH8501 AMOLED, ES8311/ES7210 codec, push-to-talk mic, BQ27220 fuel gauge, external 32kHz crystal                                 |
-| `rorolee-basic/`    | ESP32-S3 | Like `rorolee-s3` plus SD card and buttons; external 32kHz crystal                                                                                |
+| `rorolee-basic/`    | ESP32-S3 | Like `rorolee-s3` plus SD card and buttons; no external 32kHz crystal (RTC runs on the internal 150kHz oscillator) — the freed XTAL_32K_P/N pins (GPIO15/16) are reused for display DC and SD D3 |
 | `tem_monitor/`      | ESP32-S3 | Sensor board: SPA06 pressure/temperature and SHT30 temperature/humidity over I2C; a worked example of the device-I/O path; external 32kHz crystal |
 | `es8311-voice/`     | ESP32-S3 | Minimal example: one ES8311 codec doing full-duplex speaker + mic                                                                                 |
 | `es8311-asr/`       | ESP32-S3 | Minimal example: one ES8311 codec, mic-only, streams PCM to the App for live ASR                                                                  |

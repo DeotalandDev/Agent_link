@@ -283,6 +283,27 @@ esp_err_t agent_link_send_image(const uint8_t* data, size_t bytes,
 esp_err_t agent_link_push_event(agent_event_t type, const uint8_t* data, size_t len);
 
 /**
+ * @brief Push firmware-authored text for the Agent to treat as a prompt
+ *
+ * Sends AGENT_EVT_PROMPT (event 0x04) as a single control-plane event (Notify 0xFFC4); the
+ * App forwards the text verbatim to the Agent, as if the user had said/typed it. For short,
+ * discrete strings the firmware composes itself — canned phrases, sensor-triggered context,
+ * button macros.a prompt must fit in one BLE notify, so an oversized one is rejected up front 
+ * rather than silently truncated or split — call it again per chunk if the
+ * firmware text is longer than the budget below.
+ *
+ * @param utf8 NUL-terminated UTF-8 text (the terminator itself is not sent).
+ * @return ESP_OK once queued for send.
+ *         ESP_ERR_INVALID_ARG if utf8 is NULL or empty.
+ *         ESP_ERR_INVALID_SIZE if it exceeds the current single-frame budget: BLE = negotiated
+ *         ATT_MTU − 9, capped at 480B (≈238B at the recommended MTU 247; only ≈14B if the App
+ *         has not yet performed MTU exchange — see docs/agent_link_ble.md §2.2); WiFi = 1024B.
+ *         See docs/agent_link_ble.md §6.8 for the exact formula and byte/character guidance.
+ * @note a dropped frame is not resent.
+ */
+esp_err_t agent_link_push_prompt(const char* utf8);
+
+/**
  * @brief Report battery status
  * @param percent  Battery percentage (0-100)
  * @param charging true if charging

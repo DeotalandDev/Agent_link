@@ -585,6 +585,34 @@ esp_err_t agent_link_push_event(agent_event_t type, const uint8_t* data, size_t 
     return s_tx->send_ctrl(s_tx->impl, ev.data(), ev.size());
 }
 
+// Push firmware-authored text as a single AGENT_EVT_PROMPT (0x04) event; the App forwards it verbatim to the Agent as a prompt. 
+esp_err_t agent_link_push_prompt(const char* utf8) {
+    if (!utf8 || !utf8[0]) return ESP_ERR_INVALID_ARG;
+    if (!s_tx || !s_tx->send_ctrl) return ESP_ERR_INVALID_STATE;
+    if (!(s_tx->is_ready && s_tx->is_ready(s_tx->impl))) return not_ready("push_prompt");
+
+    const size_t len = strlen(utf8);
+
+    // Single-frame budget: BLE notify <= ATT_MTU-3, minus the 6-byte frame header.
+    // Same WiFi/BLE split as SendManifest,the same 480B safety ceiling as its chunk budget.
+    size_t budget;
+    if (s_cfg.transport == AGENT_TRANSPORT_WIFI) {
+        budget = 1024;
+    } else {
+        const uint16_t mtu = agent_transport_ble_att_mtu();
+        budget = (mtu > 3 + 6) ? static_cast<size_t>(mtu - 3 - 6) : 14;  // 14 = default unnegotiated MTU(23)-3-6
+    }
+    if (budget > 480) budget = 480;
+
+    if (len > budget) {
+        ESP_LOGW(TAG, "push_prompt: %uB text exceeds single-frame budget (%uB) — not sent, call again per chunk",
+                 static_cast<unsigned>(len), static_cast<unsigned>(budget));
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    return agent_link_push_event(AGENT_EVT_PROMPT, reinterpret_cast<const uint8_t*>(utf8), len);
+}
+
 // ── Generic I/O: sensors / actuators (see docs/device-io.md; generic channel that does not grow per sensor kind) ──
 esp_err_t agent_link_register_io(const agent_link_io_desc_t* desc,
                                  agent_io_actuate_cb_t cb, void* ctx) {
