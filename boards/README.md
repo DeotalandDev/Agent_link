@@ -13,7 +13,7 @@ boards/rorolee-s3/
 └── rorolee_s3.cc   the board class: subclass Board, implement capabilities, end with DECLARE_BOARD(...)
 ```
 
-`config.json` carries `manufacturer`, `type`, and `target` (the chip, e.g. `esp32s3`) — informational metadata; it tells you which `idf.py set-target` to run and isn't parsed by the build. Actual sdkconfig requirements go in two places (see "Adding a board" below): settings every board on a chip needs (flash size, PSRAM on/off) in `sdkconfig.defaults.<target>`; settings only *this* board needs, where the wanted value is itself a member of a Kconfig `choice` (a non-default PSRAM mode, an external RTC crystal, ...), patched directly into `sdkconfig` by the top of [`../CMakeLists.txt`](../CMakeLists.txt) — plain Kconfig `select` cannot force those (kconfiglib ignores `select`/`imply` aimed at a choice member), so don't reach for it there.
+`config.json` carries `manufacturer`, `type`, and `target` (the chip, e.g. `esp32s3`) — informational metadata; it tells you which `idf.py set-target` to run and isn't parsed by the build. Actual sdkconfig requirements go in two places (see "Adding a board" below): settings every board on a chip needs (flash size, PSRAM on/off, PSRAM mode/speed if the whole board family shares one module — every ESP32-S3 board here does, Octal @ 80MHz) in `sdkconfig.defaults.<target>`; settings only _this specific_ board needs, where the wanted value is itself a member of a Kconfig `choice` (an external RTC crystal on rorolee-s3/rorolee-basic/tem_monitor but not the others, say), patched directly into `sdkconfig` by the top of [`../CMakeLists.txt`](../CMakeLists.txt) — plain Kconfig `select` cannot force those (kconfiglib ignores `select`/`imply` aimed at a choice member), so don't reach for it there.
 
 ## The Board interface
 
@@ -61,9 +61,9 @@ Say `my-board` on an ESP32-C6:
 4. Edit the `.cc`: rename the class, set `Name()` and `Capabilities()`, implement your methods, and end with `DECLARE_BOARD(MyBoard);`.
 5. Register it in three places:
    - add `config BOARD_TYPE_MY_BOARD` to the `choice BOARD_TYPE` in [`../main/Kconfig.projbuild`](../main/Kconfig.projbuild). Do **not** add `select` lines for board-specific sdkconfig needs there — see the next bullet for why and what to do instead;
-   - add `elseif(CONFIG_BOARD_TYPE_MY_BOARD) set(BOARD_DIR "my-board")` to the board-select chain in [`../main/CMakeLists.txt`](../main/CMakeLists.txt). If the board needs a value that is itself a member of a Kconfig `choice` (a non-default PSRAM mode, an external RTC crystal, a specific console, ...), also add `BOARD_TYPE_MY_BOARD` (and its wanted `CONFIG_..._SRC=y`-style lines) to the per-board tables at the top of the repo-root [`../CMakeLists.txt`](../CMakeLists.txt) — that's a plain Kconfig `select` on the choice member would silently do nothing (kconfiglib: "select/imply has no effect on choice symbols"; verified against this project's own tree), so the values are patched directly into `sdkconfig` before Kconfig reads it instead. This reruns on every configure, so it self-corrects after switching `Board Type` in menuconfig, no manual `sdkconfig` editing needed.
+   - add `elseif(CONFIG_BOARD_TYPE_MY_BOARD) set(BOARD_DIR "my-board")` to the board-select chain in [`../main/CMakeLists.txt`](../main/CMakeLists.txt). If the board needs a value that only _this_ board wants and that value is itself a member of a Kconfig `choice` (an external RTC crystal, a non-default console, ...), also add `BOARD_TYPE_MY_BOARD` (and its wanted `CONFIG_..._SRC=y`-style lines) to the per-board tables at the top of the repo-root [`../CMakeLists.txt`](../CMakeLists.txt) — plain Kconfig `select` on a choice member silently does nothing (kconfiglib: "select/imply has no effect on choice symbols"; verified against this project's own tree), so the values are patched directly into `sdkconfig` before Kconfig reads it instead. This reruns on every configure, so it self-corrects after switching `Board Type` in menuconfig, no manual `sdkconfig` editing needed. If instead the whole chip family shares the value (like PSRAM mode/speed for every ESP32-S3 board here), put it in `sdkconfig.defaults.<target>` instead — see the last bullet below.
    - If you use peripherals beyond what is already required, add their driver components (`esp_driver_i2c`, `esp_lcd`, `esp_codec_dev`) to `REQUIRES` in `main/CMakeLists.txt`.
-   - If the board is on a chip target that isn't built yet (a new `esp32c6`, say), add a `sdkconfig.defaults.<target>` at the repo root for whatever *every* board on that chip needs (flash size, PSRAM on/off, ...) — ESP-IDF merges it automatically on `idf.py set-target <target>`, the same way [`../sdkconfig.defaults.esp32p4`](../sdkconfig.defaults.esp32p4) already does for the P4 board. Plain `select` in `main/Kconfig.projbuild` is still the right tool for a board-specific value that is a plain bool, not a choice member (not common so far in this repo).
+   - If the board is on a chip target that isn't built yet (a new `esp32c6`, say), add a `sdkconfig.defaults.<target>` at the repo root for whatever _every_ board on that chip needs (flash size, PSRAM on/off, ...) — ESP-IDF merges it automatically on `idf.py set-target <target>`, the same way [`../sdkconfig.defaults.esp32p4`](../sdkconfig.defaults.esp32p4) already does for the P4 board. Plain `select` in `main/Kconfig.projbuild` is still the right tool for a board-specific value that is a plain bool, not a choice member (not common so far in this repo).
 
 Then build:
 
@@ -79,15 +79,15 @@ idf.py build flash
 
 The Board Type menu currently offers:
 
-| Directory           | Target   | Notes                                                                                                                     |
-| ------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `rorolee-s3/`       | ESP32-S3 | Reference board: SH8501 AMOLED, ES8311/ES7210 codec, push-to-talk mic, BQ27220 fuel gauge, external 32kHz crystal        |
-| `rorolee-basic/`    | ESP32-S3 | Like `rorolee-s3` plus SD card and buttons; external 32kHz crystal                                                        |
+| Directory           | Target   | Notes                                                                                                                                             |
+| ------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `rorolee-s3/`       | ESP32-S3 | Reference board: SH8501 AMOLED, ES8311/ES7210 codec, push-to-talk mic, BQ27220 fuel gauge, external 32kHz crystal                                 |
+| `rorolee-basic/`    | ESP32-S3 | Like `rorolee-s3` plus SD card and buttons; external 32kHz crystal                                                                                |
 | `tem_monitor/`      | ESP32-S3 | Sensor board: SPA06 pressure/temperature and SHT30 temperature/humidity over I2C; a worked example of the device-I/O path; external 32kHz crystal |
-| `es8311-voice/`     | ESP32-S3 | Minimal example: one ES8311 codec doing full-duplex speaker + mic                                                         |
-| `es8311-asr/`       | ESP32-S3 | Minimal example: one ES8311 codec, mic-only, streams PCM to the App for live ASR                                         |
-| `gc2145-camera/`    | ESP32-S3 | GC2145 DVP camera live preview on an ST7789 240x240 LCD; needs Octal PSRAM @ 80MHz (applied automatically for this board via the `CMakeLists.txt` patch step) |
-| `esp32p4Waveshare/` | ESP32-P4 | Waveshare board with a CO5300 466x466 AMOLED                                                                              |
+| `es8311-voice/`     | ESP32-S3 | Minimal example: one ES8311 codec doing full-duplex speaker + mic                                                                                 |
+| `es8311-asr/`       | ESP32-S3 | Minimal example: one ES8311 codec, mic-only, streams PCM to the App for live ASR                                                                  |
+| `gc2145-camera/`    | ESP32-S3 | GC2145 DVP camera live preview on an ST7789 240x240 LCD                                                                                           |
+| `esp32p4Waveshare/` | ESP32-P4 | Waveshare board with a CO5300 466x466 AMOLED                                                                                                      |
 
 Drivers used by more than one board live in [`common/`](common/)
 
